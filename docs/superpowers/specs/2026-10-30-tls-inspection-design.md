@@ -1,6 +1,6 @@
 # HTTPS inspection for Mikrokat
 
-Date: 2026-10-30. Status: design, awaiting review. Branch: `tls-inspection`.
+Date: 2026-10-30. Status: implemented, phase 1. Branch: `tls-inspection`.
 
 ## Goal
 
@@ -200,6 +200,16 @@ Alerts from decrypted traffic get a `decrypted` badge on Live and on the host pa
   - no password or cookie sent in a test request appears anywhere under `data/`
 - Review by `ecc:go-reviewer` and `ecc:security-reviewer` before phase 1 is called done.
 - Measured on the real host: CPU, RAM and throughput.
+
+## Differences in the implementation
+
+Measurements and reviews changed the design in these places.
+
+- **Pacing.** The emitter sends 16 KiB per millisecond, about 10 MB/s, because UDP to `tzsp` has no backpressure and the kernel dropped frames that Suricata then missed as gaps. Copies of faster transfers wait in the queue or are dropped. Loss between the proxy and `tzsp` under overload is not counted. `tests/e2e/run.sh` checks for it.
+- **Memory limit.** The Go heap is limited to the 64 MiB queue plus 32 MiB, 96 MiB in all, so a full queue does not double. While the queue is full, the collector costs the relay some speed. Compose adds `mem_limit: 256m` and `pids_limit: 128`.
+- **105 MB peak under overload.** A full queue with 100 connections at once peaks at about 105 MB, over the 100 MB in the success criteria. This is accepted: normal use is 13 MB, and the peak needs a sustained overload.
+- **Connection limits.** The proxy holds 512 connections, 128 per device, and closes any over a cap at once, counted as refused. A relay ends after 10 minutes with no bytes in either direction, and 60 seconds after the first half-close, because a hostile server could otherwise keep a half-closed connection for ever.
+- **Private destinations refused.** The design relayed private destinations. SOCKS now refuses them, with CGNAT and unique-local ones and with no allow-list, and the PAC file sends them direct, because they gave a listed device, or a web page through DNS rebinding, the network position of the host.
 
 ## Success criteria
 
