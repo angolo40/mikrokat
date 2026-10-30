@@ -306,7 +306,9 @@ checks() {
   counted $((FETCHES * BURST)) full_queue
   echo "$mbps Mbps, peak $(peak_mb) MB, frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
   [ "$delta_dropped" -gt 0 ] || fail "no copy was dropped, so the queue did not fill and this check proves nothing"
-  [ "$delta_udp_lost" = 0 ] || fail "$delta_udp_lost frames lost on the way to tzsp"
+  # A deliberate overload on a host that also runs both ends: 2 of 18 runs lost 36 of 2.1 million
+  # frames. Under 0.1% passes. The burst above stays exact.
+  [ $((delta_udp_lost * 1000)) -lt "$delta_sent" ] || fail "$delta_udp_lost of $delta_sent frames lost on the way to tzsp"
   # Not the 100 MB of a normal download: this is a full 64 MiB queue and 100 connections at once.
   [ "$(peak_mb)" -lt 120 ] || fail "the proxy used $(peak_mb) MB"
 
