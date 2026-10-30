@@ -4,7 +4,8 @@
 Usage: server.py <address> <certificate> <key>
 
 /bytes/<n> returns n bytes with TAIL_MARKER near the end of the first MiB, so a rule can show
-that the whole copy reached Suricata. Anything else returns BODY, and POST also reads the body.
+that the whole copy reached Suricata. /mikrokat-e2e-redirect answers 302 to REDIRECT_TARGET.
+Anything else returns BODY, and POST also reads the body.
 """
 import http.server
 import random
@@ -12,6 +13,7 @@ import ssl
 import sys
 
 BODY = b"mikrokat-e2e-ok\n"
+REDIRECT_TARGET = "/mikrokat-e2e-target"
 TAIL_MARKER = b"mikrokat-e2e-tail"
 TAIL_AT = 2**20 - 4096
 BLOCK = random.Random(1).randbytes(2**16)
@@ -39,6 +41,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path.startswith("/mikrokat-e2e-redirect"):
+            self.send_response(302)
+            self.send_header("Location", REDIRECT_TARGET)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path.startswith("/bytes/"):
             left = int(self.path.split("/")[2])
             self.answer(left)

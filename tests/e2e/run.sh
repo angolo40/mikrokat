@@ -17,6 +17,7 @@ ALARM="HTTPS inspection has stopped"
 PORT_ALARM="The HTTPS inspection port is closed"
 COOKIE=e2e-cookie-value
 POST_BODY=e2e-body-value
+URL_TOKEN=e2e-url-token
 BURST=$((2**20))
 FETCHES=200
 SUSTAINED=$((2**30))
@@ -147,6 +148,14 @@ post_seen() {
 
 badge_shown() {
   curl -s --max-time 2 -b "$E2E_WORK/cookies" "$APP/live/stream" | grep '"sid": 9000001' | grep -q '"decrypted": true'
+}
+
+# written <record> <text>: the text is in an alert, or an http event, about the redirect request.
+written() {
+  case $1 in
+    alert) alerts 9000001 ;;
+    http) events | grep '"event_type":"http"' ;;
+  esac | grep -F "/mikrokat-e2e-redirect?token=$URL_TOKEN" | grep -qF "$2"
 }
 
 # alarm_shown <text>: the text is on the Overview page.
@@ -305,6 +314,16 @@ checks() {
   sleep 5 # let EveBox read it too
   grep -rlF -e "$COOKIE" -e "$POST_BODY" data/ >"$E2E_WORK/found"
   [ ! -s "$E2E_WORK/found" ] || fail "found in $(tr '\n' ' ' <"$E2E_WORK/found")"
+
+  check "URLs are written"
+  through_proxy test.example.net --cacert "$E2E_WORK/ca.pem" -o /dev/null -e "https://test.example.net/from?token=$URL_TOKEN" \
+    "https://test.example.net/mikrokat-e2e-redirect?token=$URL_TOKEN" || fail "the request failed"
+  wait_for 30 written http '"hostname":"test.example.net"' || fail "no http event with the token in the URL"
+  wait_for 30 written alert "\"http_refer\":\"https://test.example.net/from?token=$URL_TOKEN\"" || fail "no referrer in the alert"
+  written alert '"redirect":"/mikrokat-e2e-target"' || fail "no redirect target in the alert"
+  written alert '"payload"' && fail "the alert carries a payload"
+  echo "alert fields: $(alerts 9000001 | grep -F "$URL_TOKEN" | head -1 | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin)["http"])))')"
+  echo "http event fields: $(events | grep '"event_type":"http"' | grep -F "$URL_TOKEN" | head -1 | python3 -c 'import json, sys; print(" ".join(sorted(json.load(sys.stdin)["http"])))')"
 
   check "Burst of 1 MiB"
   counted "$BURST" burst
