@@ -20,7 +20,9 @@ const (
 	emitQueue = 64 << 20
 	// Without a limit the heap grows to twice a full queue, past the 100 MB
 	// the proxy may use. The queue is what fills, so the limit follows it.
-	memoryLimit = emitQueue + 16<<20
+	// At 80 MiB the peak was the same and the collector ran without pause,
+	// which cost the relay 30 to 46% of its speed while the queue was full.
+	memoryLimit = emitQueue + 32<<20
 
 	controlEvery = 2 * time.Second
 	statsEvery   = 10 * time.Second
