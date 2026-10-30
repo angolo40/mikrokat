@@ -60,7 +60,7 @@ Compose settings follow the other services: host network, `cap_drop: ALL`, `no-n
 Each connection follows the same steps, whichever entry it came from:
 
 1. Refuse it unless the source address is in the device list.
-2. Get the destination address and port from the entry point. Refuse loopback, link-local, multicast and unspecified destinations, so a listed device cannot reach services bound to the host.
+2. Get the destination address and port from the entry point. Refuse loopback, link-local, multicast and unspecified destinations, the host's own addresses, and the subnets of its Docker bridges, so a listed device cannot reach services on the host or containers without a login, such as EveBox.
 3. If the port is 443, read the TLS ClientHello without consuming it, with a 5 second limit. Other ports skip this step, because protocols such as SMTP wait for the server to speak first.
 4. Relay it untouched, counting the reason, if any of these is true:
    - the port is not 443, or the bytes are not TLS
