@@ -165,12 +165,18 @@ func TestForbidden(t *testing.T) {
 		"169.254.169.254", "::ffff:169.254.169.254", "fe80::1",
 		"224.0.0.1", "239.255.255.250", "::ffff:224.0.0.1", "ff01::1", "ff02::1", "ff0e::1",
 		"0.0.0.0", "::", "::ffff:0.0.0.0",
+		"10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.1.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1",
+		"100.64.0.1", "100.127.255.254", "::ffff:100.64.0.1",
+		"fc00::1", "fd00::1", "fdff:ffff::1",
 	} {
 		if !Forbidden(net.ParseIP(s)) {
 			t.Errorf("%s is allowed", s)
 		}
 	}
-	for _, s := range []string{"8.8.8.8", "::ffff:8.8.8.8", "10.0.0.1", "192.168.1.1", "fd00::1", "2001:4860:4860::8888"} {
+	for _, s := range []string{
+		"8.8.8.8", "::ffff:8.8.8.8", "2001:4860:4860::8888",
+		"11.0.0.1", "172.15.255.254", "172.32.0.1", "192.167.1.1", "100.63.255.254", "100.128.0.1", "fe00::1",
+	} {
 		if Forbidden(net.ParseIP(s)) {
 			t.Errorf("%s is forbidden", s)
 		}
@@ -750,7 +756,7 @@ func fakeInterfaces(t *testing.T) []HostInterface {
 		{"wg0", addrs(t, "10.8.0.1/24")},
 		{"bridge0", addrs(t, "192.0.2.1/24")},
 		{"docker0", addrs(t, "172.17.0.1/16")},
-		{"br-7729c41117fb", addrs(t, "172.18.0.1/16", "fd00:18::1/64")},
+		{"br-7729c41117fb", addrs(t, "172.18.0.1/16", "fd00:18::1/64", "203.0.113.1/24")},
 	}
 }
 
@@ -779,6 +785,7 @@ func TestLocalAddressRefused(t *testing.T) {
 	for _, dest := range []string{
 		"10.0.10.24", "::ffff:10.0.10.24", "2001:db8:10::24", "10.8.0.1", // the host itself
 		"172.18.0.1", "172.18.0.4", "172.18.255.254", "::ffff:172.18.0.4", "fd00:18::4", // br-
+		"203.0.113.1", "203.0.113.4", "::ffff:203.0.113.4", // br-, with a public subnet
 		"172.17.0.1", "172.17.0.5", // docker0
 	} {
 		t.Run(dest, func(t *testing.T) {
@@ -794,8 +801,8 @@ func TestLocalAddressRefused(t *testing.T) {
 			}
 		})
 	}
-	// Only Docker's subnets are closed. A private destination is otherwise relayed.
-	for _, dest := range []string{"10.0.10.25", "2001:db8:10::25", "10.8.0.2", "192.0.2.7", "172.19.0.4"} {
+	// A public address next to the host, or on a bridge that is not Docker's.
+	for _, dest := range []string{"2001:db8:10::25", "192.0.2.7"} {
 		t.Run("allowed "+dest, func(t *testing.T) {
 			r := newSocksRig(t, echoServer(t, ""))
 			r.Interfaces = func() ([]HostInterface, error) { return fakeInterfaces(t), nil }
@@ -811,18 +818,41 @@ func TestLocalAddressRefused(t *testing.T) {
 	}
 }
 
+// A listed device, or a page through DNS rebinding, must not reach the LAN and
+// the router from the host's address. No port is an exception.
+func TestPrivateDestinationRefused(t *testing.T) {
+	for _, dest := range []string{
+		"10.0.10.25", "10.8.0.2", "172.19.0.4", "192.168.88.1", "::ffff:192.168.88.1", // private
+		"100.64.0.1", "100.127.255.254", "::ffff:100.100.100.100", // CGNAT
+		"fc00::1", "fd12:3456::1", // unique local
+	} {
+		t.Run(dest, func(t *testing.T) {
+			r := newSocksRig(t, echoServer(t, ""))
+			r.Interfaces = func() ([]HostInterface, error) { return fakeInterfaces(t), nil }
+			r.Apply(r.cfg)
+			lit, name := r.connectTo(t, dest)
+			if lit != ReplyNotAllowed || name != ReplyNotAllowed {
+				t.Fatalf("reply codes %d and %d", lit, name)
+			}
+			if n := r.dials.Load(); n != 0 {
+				t.Fatalf("%d dials", n)
+			}
+		})
+	}
+}
+
 func TestNewDockerNetworkCoveredByNextApply(t *testing.T) {
 	r := newSocksRig(t, echoServer(t, ""))
 	ifaces := fakeInterfaces(t)
 	r.Interfaces = func() ([]HostInterface, error) { return ifaces, nil }
 	r.Apply(r.cfg)
-	if lit, _ := r.connectTo(t, "172.19.0.4"); lit != ReplyOK {
+	if lit, _ := r.connectTo(t, "198.18.0.4"); lit != ReplyOK {
 		t.Fatalf("reply code %d before the network exists", lit)
 	}
 	ln := r.ln
-	ifaces = append(ifaces, HostInterface{"br-1234567890ab", addrs(t, "172.19.0.1/16")})
+	ifaces = append(ifaces, HostInterface{"br-1234567890ab", addrs(t, "198.18.0.1/16")})
 	r.Apply(r.cfg)
-	if lit, name := r.connectTo(t, "172.19.0.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
+	if lit, name := r.connectTo(t, "198.18.0.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
 		t.Fatalf("reply codes %d and %d", lit, name)
 	}
 	if r.ln != ln {
@@ -847,7 +877,7 @@ func TestInterfaceFailureKeepsLastList(t *testing.T) {
 	if n := logged(); n != 1 {
 		t.Fatalf("logged %d times: %q", n, r.logs)
 	}
-	if lit, name := r.connectTo(t, "172.18.0.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
+	if lit, name := r.connectTo(t, "203.0.113.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
 		t.Fatalf("reply codes %d and %d", lit, name)
 	}
 	r.relayed(t, "127.0.0.1")

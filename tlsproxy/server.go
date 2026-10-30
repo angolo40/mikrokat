@@ -21,13 +21,19 @@ const (
 	maxPerDevice = 128
 )
 
+// cgnat is the shared address space of RFC 6598, unknown to the net package.
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
+
 // Forbidden reports whether ip is in a class no device may connect to. The
 // proxy shares the network of the host, so these addresses would reach the
-// host itself. The net.IP methods also match IPv4-mapped forms, and IsMulticast
+// host itself, or the LAN and the router from the host's address, which a web
+// page can ask for through DNS rebinding. The proxy inspects none of this
+// traffic. The net.IP methods also match IPv4-mapped forms, and IsMulticast
 // covers every scope, interface-local included. Server.refused adds the
 // addresses that depend on the host.
 func Forbidden(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified()
+	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() ||
+		ip.IsPrivate() || cgnat.Contains(ip)
 }
 
 // Dial opens the upstream connection. The result is a *net.TCPConn, which the
@@ -68,9 +74,9 @@ func hostInterfaces() ([]HostInterface, error) {
 }
 
 // localNets is what the interfaces of the host put out of reach: its own
-// addresses, on any interface, and the whole subnet of each Docker bridge. The
-// containers there expect only the host's own traffic, and EveBox has no login
-// of its own. Other subnets, such as the LAN, stay reachable.
+// addresses, on any interface, and the whole subnet of each Docker bridge, even
+// one outside the private ranges. The containers there expect only the host's
+// own traffic, and EveBox has no login of its own.
 type localNets struct {
 	hosts   []net.IP
 	bridges []*net.IPNet

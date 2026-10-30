@@ -637,13 +637,24 @@ GUIDE = """<aside class="guide">
 </aside>"""
 
 
+# Addresses the proxy refuses, written as a host in a URL. The test is on the text: isInNet would look a name up.
+PAC_LOCAL = (r"^(10\.\d+|127\.\d+|169\.254|172\.(1[6-9]|2\d|3[01])|192\.168|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d+\.\d+$"
+             r"|^\[?(f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:|::1\]?$)")
+
+
 def pac_text(host):
-    """Return the proxy auto-config script. The Host header is attacker-controlled and ends up inside a JavaScript string."""
+    """Return the proxy auto-config script. The Host header is attacker-controlled and ends up inside a JavaScript string.
+
+    Only HTTPS to public names goes to the proxy. It inspects nothing else, and relaying the rest would only hide the real device.
+    """
     s = store.settings
     found = re.fullmatch(r"(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?", host.strip())
     if not (found and s["tls_enabled"] and s["tls_socks"]):
         return 'function FindProxyForURL(url, host) {\n  return "DIRECT";\n}\n'
-    return ('function FindProxyForURL(url, host) {\n  if (isPlainHostName(host)) return "DIRECT";\n'
+    return ('function FindProxyForURL(url, host) {\n'
+            '  if (url.substring(0, 6) != "https:" && url.substring(0, 4) != "wss:") return "DIRECT";\n'
+            '  if (isPlainHostName(host)) return "DIRECT";\n'
+            f'  if (/{PAC_LOCAL}/i.test(host)) return "DIRECT";\n'
             f'  return "SOCKS5 {found.group(1)}:{int(s["tls_socks_port"])}; DIRECT";\n}}\n')
 
 

@@ -178,7 +178,7 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 - Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
 - Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
-- Ports other than 443, private addresses, and IPv6 addresses.
+- Ports other than 443, and IPv6 addresses.
 - QUIC. The proxy takes TCP only, so browsers fall back to TCP.
 - Everything after the first 1 MiB in each direction of a connection. It is relayed, but no copy is kept. A rule on an HTTP response body sees less: Suricata reads the first 100 KiB by default.
 
@@ -194,7 +194,9 @@ To check it, open a site in that profile and look at its certificate: the issuer
 
 ### The PAC file
 
-`/tls.pac` tells a browser where to send its traffic, and it needs no login. While the feature is on, it answers `SOCKS5 <host>:1080; DIRECT`, which means use the proxy, or go direct if the proxy does not answer. While the feature is off, it answers `DIRECT`. Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if they trust the CA.
+`/tls.pac` tells a browser where to send its traffic, and it needs no login. While the feature is on, it answers `SOCKS5 <host>:1080; DIRECT` for `https:` and `wss:` addresses, which means use the proxy, or go direct if the proxy does not answer. Everything else goes direct: other schemes, plain host names and private addresses. The proxy inspects none of that, and relaying it would only hide the real device. While the feature is off, the file answers `DIRECT`.
+
+Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if they trust the CA. Through it, a listed device reaches public sites only, with the address of the Mikrokat host. The proxy refuses private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), the CGNAT range 100.64/10, loopback and link-local addresses, the addresses of the host and the subnets of its Docker networks, and it does so also for a name that resolves to one of them. There is no allow-list, so an HTTPS site on your LAN with a full name, such as `nas.home.example`, fails in a browser using the PAC file. Open it from another profile.
 
 ### Limits
 

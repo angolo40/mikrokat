@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -101,9 +102,12 @@ class TlsSettings(Base):
 
 
 class Pac(Base):
-    def test_on(self):
+    def on(self):
         store.settings.update(tls_enabled=True, tls_devices=["10.0.0.5"])
-        self.assertIn("SOCKS5 mikrokat.lan:1080; DIRECT", web.pac_text("mikrokat.lan:8088"))
+        return web.pac_text("mikrokat.lan:8088")
+
+    def test_on(self):
+        self.assertIn("SOCKS5 mikrokat.lan:1080; DIRECT", self.on())
 
     def test_off(self):
         self.assertIn('return "DIRECT"', web.pac_text("mikrokat.lan:8088"))
@@ -122,6 +126,31 @@ class Pac(Base):
     def test_ipv6_host(self):
         store.settings.update(tls_enabled=True, tls_devices=["10.0.0.5"])
         self.assertIn("SOCKS5 [fd00::1]:1080; DIRECT", web.pac_text("[fd00::1]:8088"))
+
+    def test_only_https_and_wss_reach_the_proxy(self):
+        lines = self.on().splitlines()
+        first = lines[1]
+        self.assertIn('"https:"', first)
+        self.assertIn('"wss:"', first)
+        self.assertIn('return "DIRECT"', first)
+        self.assertNotIn("http:", first)
+
+    def test_plain_names_and_local_addresses_are_direct(self):
+        text = self.on()
+        self.assertIn('if (isPlainHostName(host)) return "DIRECT";', text)
+        self.assertIn(f"if (/{web.PAC_LOCAL}/i.test(host)) return \"DIRECT\";", text)
+        self.assertLess(text.index("PlainHostName"), text.index("SOCKS5"))
+        self.assertLess(text.index(".test(host)"), text.index("SOCKS5"))
+
+    def test_local_address_pattern(self):
+        local = ("10.0.0.1", "10.255.255.254", "127.0.0.1", "169.254.169.254", "172.16.0.1", "172.31.255.1", "192.168.88.1",
+                 "100.64.0.1", "100.127.255.254", "fc00::1", "fd12:3456::1", "[fd00::1]", "FD00::1", "fe80::1", "::1", "[::1]")
+        public = ("8.8.8.8", "11.0.0.1", "172.15.0.1", "172.32.0.1", "192.167.0.1", "100.63.0.1", "100.128.0.1", "2001:db8::1",
+                  "example.com", "10.example.com", "10.0.0.1.example.com", "192.168.1.1.example.com", "fd00.example.com", "fc.example")
+        for host in local:
+            self.assertRegex(host, re.compile(web.PAC_LOCAL, re.I))
+        for host in public:
+            self.assertNotRegex(host, re.compile(web.PAC_LOCAL, re.I))
 
 
 class Page(Base):

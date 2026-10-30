@@ -325,6 +325,12 @@ checks() {
     grep -q "(2)" "$E2E_WORK/curl.log" || fail "$address was not refused: $(cat "$E2E_WORK/curl.log")"
   done
 
+  check "Private destinations"
+  for address in 10.255.255.1 172.31.255.1 192.168.255.1 100.64.255.1 '[fd00::1]'; do
+    curl -sS --max-time 10 --socks5 "$SOCKS" -o /dev/null "https://$address/" 2>"$E2E_WORK/curl.log"
+    grep -q "(2)" "$E2E_WORK/curl.log" || fail "$address was not refused: $(cat "$E2E_WORK/curl.log")"
+  done
+
   check "Device outside the list"
   address=$(hostname -I | cut -d' ' -f1)
   before=$(counter refused)
