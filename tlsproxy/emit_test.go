@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -189,35 +188,35 @@ func TestSegments(t *testing.T) {
 }
 
 func TestCopyCap(t *testing.T) {
-	e, sk, st := startEmitter(t, 64<<20)
-	var fins atomic.Int32
-	go func() { // drain while the data flows, the socket buffer is small
-		buf := make([]byte, 65535)
-		for {
-			n, _, err := sk.c.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			if n > 5+tcpAt+13 && buf[5+tcpAt+13]&1 != 0 {
-				fins.Add(1)
-			}
-		}
-	}()
+	// No Run and no socket: read the queue directly, so nothing depends on
+	// the scheduler or on kernel buffers.
+	st := NewStats()
+	e, err := NewEmitter("127.0.0.1:9", 64<<20, st)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := e.Open(ip4("10.0.0.1"), ip4("10.0.0.2"), 40000)
 	chunk := make([]byte, 64<<10)
 	for i := 0; i < 32; i++ { // 2 MiB
 		s.Client(chunk)
 	}
-	if c := statsCopied(st); c > 1<<20 || c == 0 {
-		t.Fatalf("copied %d", c)
+	if c := statsCopied(st); c != 1<<20 {
+		t.Fatalf("copied %d, want %d", c, 1<<20)
 	}
 	s.Close()
-	deadline := time.Now().Add(10 * time.Second)
-	for fins.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	if statsDropped(st) != 0 {
+		t.Fatal("frames dropped")
 	}
-	if fins.Load() != 2 {
-		t.Fatalf("saw %d FINs", fins.Load())
+	frame := func(i int) []byte { return e.queue[i][5:] }
+	cISN, sISN := seqOf(frame(0)), seqOf(frame(1))
+	n := len(e.queue)
+	f1, f2, f3 := frame(n-3), frame(n-2), frame(n-1)
+	if flagsOf(f1)&1 == 0 || flagsOf(f2)&1 == 0 || flagsOf(f3) != 0x10 {
+		t.Fatalf("close flags %#x %#x %#x", flagsOf(f1), flagsOf(f2), flagsOf(f3))
+	}
+	end := cISN + 1 + 1<<20
+	if seqOf(f1) != end || seqOf(f2) != sISN+1 || ackOf(f2) != end+1 || seqOf(f3) != end+1 {
+		t.Fatalf("FIN numbers wrong: %d %d %d", seqOf(f1), seqOf(f2), seqOf(f3))
 	}
 }
 
