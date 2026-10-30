@@ -16,7 +16,9 @@ ALARM="HTTPS inspection has stopped"
 COOKIE=e2e-cookie-value
 POST_BODY=e2e-body-value
 BURST=$((2**20))
+FETCHES=200
 SUSTAINED=$((2**30))
+SETTLE=14 # dump-counters lagged by 10.6 seconds at most, and stats.json is written every 10
 COMPOSE=(docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml)
 
 export E2E_WORK=
@@ -162,12 +164,18 @@ frames() {
   echo "dropped=$(counter copies_dropped)"
 }
 
-# counted <command...>: runs it and sets one delta_<name> for each line of frames.
+# counted <command...>: runs it, then sets one delta_<name> for each line of frames, and mbps for the
+# speed of the whole run in $1 of the bytes it fetches. Both readings wait, or earlier traffic that
+# has not reached the counters yet would be charged to this run.
 counted() {
-  local before after
+  local before after started bytes=$1
+  shift
+  sleep "$SETTLE"
   before=$(frames)
+  started=$EPOCHREALTIME
   "$@" || fail "the download failed"
-  sleep 12 # stats.json is written every 10 seconds, and Suricata's counters follow
+  mbps=$(awk -v n="$bytes" -v a="$started" -v b="$EPOCHREALTIME" 'BEGIN { printf "%.0f", n * 8 / (b - a) / 1000000 }')
+  sleep "$SETTLE"
   after=$(frames)
   eval "$(printf '%s\n%s\n' "$before" "$after" | awk -F= '$1 in first { print "delta_" $1 "=" $2 - first[$1]; next } { first[$1] = $2 }')"
 }
@@ -178,7 +186,7 @@ burst() {
 
 # Copies arrive faster than they can be paced out, so the emitter queue fills.
 full_queue() {
-  through_proxy test.example.net -Z --parallel-max 100 --cacert "$E2E_WORK/ca.pem" "https://test.example.net/bytes/$BURST/[1-200]" >/dev/null
+  through_proxy test.example.net -Z --parallel-max 100 --cacert "$E2E_WORK/ca.pem" "https://test.example.net/bytes/$BURST/[1-$FETCHES]" >/dev/null
 }
 
 proxy_pid() {
@@ -203,7 +211,7 @@ measure() {
   cp data/tls/state/ca.pem "$E2E_WORK/ca.pem"
   sleep 3
 
-  counted burst
+  counted "$BURST" burst
   echo "Burst of $BURST bytes: frames sent $delta_sent, seen by tzsp $delta_tzsp, seen by Suricata $delta_suricata"
   echo "Lost: socket $delta_udp_lost, Suricata ring $delta_suricata_lost. Gaps: $delta_gaps. copies_dropped: $delta_dropped"
   # 54 bytes of headers per frame: Suricata does not count the VLAN tag.
@@ -230,8 +238,8 @@ measure() {
   echo "RAM on: $(sort -k1 -h "$E2E_WORK/ram" | tail -1) at the highest sample, peak $(peak_mb) MB, $(ram) after"
   echo "copies_dropped: $(counter copies_dropped)"
 
-  counted full_queue
-  echo "Full queue: peak $(peak_mb) MB, $(ram) after. Frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
+  counted $((FETCHES * BURST)) full_queue
+  echo "Full queue: $mbps Mbps, peak $(peak_mb) MB, $(ram) after. Frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
 }
 
 checks() {
@@ -284,17 +292,21 @@ checks() {
   [ ! -s "$E2E_WORK/found" ] || fail "found in $(tr '\n' ' ' <"$E2E_WORK/found")"
 
   check "Burst of 1 MiB"
-  counted burst
+  counted "$BURST" burst
   echo "frames sent $delta_sent, seen by tzsp $delta_tzsp, seen by Suricata $delta_suricata, gaps $delta_gaps, copies_dropped $delta_dropped"
   [ "$delta_sent" -gt $((2 * BURST / 1460)) ] || fail "only $delta_sent frames were sent"
+  [ "$delta_tzsp" = "$delta_sent" ] || fail "$delta_sent frames sent, but tzsp saw $delta_tzsp"
+  [ "$delta_suricata" = "$delta_sent" ] || fail "$delta_sent frames sent, but Suricata saw $delta_suricata"
   [ "$delta_udp_lost" = 0 ] || fail "$delta_udp_lost frames lost on the way to tzsp"
   [ "$delta_suricata_lost" = 0 ] || fail "$delta_suricata_lost frames lost on the way to Suricata"
   [ "$delta_gaps" = 0 ] || fail "$delta_gaps gaps in the stream"
   wait_for 30 alert_seen 9000002 || fail "no alert on the tail of the burst"
 
   check "Full queue"
-  counted full_queue
-  echo "peak $(peak_mb) MB, frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
+  counted $((FETCHES * BURST)) full_queue
+  echo "$mbps Mbps, peak $(peak_mb) MB, frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
+  [ "$delta_dropped" -gt 0 ] || fail "no copy was dropped, so the queue did not fill and this check proves nothing"
+  [ "$delta_udp_lost" = 0 ] || fail "$delta_udp_lost frames lost on the way to tzsp"
   # Not the 100 MB of a normal download: this is a full 64 MiB queue and 100 connections at once.
   [ "$(peak_mb)" -lt 120 ] || fail "the proxy used $(peak_mb) MB"
 
@@ -356,6 +368,10 @@ setup() {
   remove_rules
 
   E2E_WORK=$(mktemp -d)
+  # This suite runs again after every review, so a PASS must be for the code in this folder.
+  docker compose build tzsp mikrokat tlsproxy </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "the build failed: $(tail -3 "$E2E_WORK/build.log")"
+  docker compose up -d --no-deps tzsp mikrokat </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start: $(tail -3 "$E2E_WORK/build.log")"
+
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$TEST_CA" \
     -keyout "$E2E_WORK/test-ca.key" -out "$E2E_WORK/test-ca.pem" 2>/dev/null || fail "no test CA"
   openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=test.example.net \
