@@ -39,8 +39,8 @@ func Classify(d Dest, h Hello, match string) string {
 }
 
 // Engine decides for each connection whether to relay it untouched or to
-// inspect it. It never hides a bad upstream certificate and never changes the
-// bytes it passes on.
+// inspect it. It never hides an upstream certificate that fails its checks of
+// chain, name and dates, and it never changes the bytes it passes on.
 type Engine struct {
 	CA         *atomic.Pointer[CA]
 	Bypass     *Bypass

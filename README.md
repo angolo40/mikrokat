@@ -163,33 +163,33 @@ To keep a rule in Events but stop its notifications and blocks, use **Mute**.
 
 ## HTTPS inspection
 
-Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It keeps a copy of the traffic and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
+Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate chain, name and dates, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It makes a copy of the traffic in memory and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
 
-It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site with a bad certificate is passed through untouched, so the browser shows its usual warning. If the proxy stops, or it cannot open its port, browsers using the PAC file below go direct, and a health alarm appears within about two minutes. Another alarm warns when the CA has less than 30 days left.
+It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site whose certificate fails those checks is passed through untouched, so the browser shows its usual warning. If the proxy stops, or it cannot open its port, browsers using the PAC file below go direct, and a health alarm appears within about two minutes. Another alarm warns when the CA has less than 30 days left.
 
 **Inspect only your own devices, or with the consent of the person using them.** Whoever runs Mikrokat can see the URLs they open.
 
 ### What stays encrypted
 
-Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab counts them by reason.
+Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab counts by reason the connections that reach the proxy. Programs that do not use the proxy, QUIC, and bytes past the first 1 MiB have no counter.
 
 - Devices that are not on your list, and programs on a listed device that do not use the proxy.
-- Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one.
+- Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one: it names a few institutions, in Italy and Switzerland, plus PayPal. Any other bank, payment or health site is decrypted unless you add it first.
 - Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
 - Everything, once the CA has expired. Connections keep working and are counted as `ca_expired`. Press **Regenerate the CA** before that.
 - Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
 - Ports other than 443, IPv6 destinations, and devices that reach the proxy over IPv6.
 - QUIC. The proxy takes TCP only, so browsers fall back to TCP.
-- Everything after the first 1 MiB in each direction of a connection. It is relayed, but no copy is kept. A rule on an HTTP response body sees less: Suricata reads the first 100 KiB by default.
+- Everything after the first 1 MiB in each direction of a connection. It is relayed, but no copy is made. A rule on an HTTP response body sees less: Suricata reads the first 100 KiB by default.
 
 ### Set up one Firefox profile
 
 1. On the HTTPS inspection tab of Settings, add the address of the device, turn on the switch and save.
-2. On the same tab, use **Download the CA certificate**.
+2. Wait a few seconds, so the proxy can make the CA, then use **Download the CA certificate** on the same tab.
 3. In Firefox, open `about:profiles`, create a new profile and launch it. Only this profile will trust the CA, not the rest of the computer.
 4. In that profile, open Settings, Privacy & Security, Certificates, View Certificates, Authorities, then Import. Choose the file and tick **Trust this CA to identify websites**.
-5. Under Settings, General, Network Settings, choose **Automatic proxy configuration URL** and enter `http://<host>:8088/tls.pac`.
+5. Under Settings, General, Network Settings, choose **Automatic proxy configuration URL**, enter `http://<host>:8088/tls.pac` and tick **Proxy DNS when using SOCKS v5**. The proxy then looks up each name. Otherwise Firefox does it, outside the proxy, and can learn the keys for Encrypted Client Hello, which hide the name from the proxy.
 
 To check it, open a site in that profile and look at its certificate: the issuer is `Mikrokat local CA`.
 
@@ -203,9 +203,15 @@ Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if
 
 - **Apps must be configured.** Nothing on the router changes, so a program is inspected only if it is set to use the proxy and trusts the CA.
 - **A program can ignore SOCKS.** A proxy setting is a request, not a control. Do not count on this to catch software that wants to hide.
-- **URLs stay in the logs.** Suricata stores the host, URL and user agent of inspected requests for as long as EVE and EveBox keep them: 7 days by default, as set by **Keep logs for** on the Data tab, up to 4 GB. URLs can hold tokens. Passwords, cookies and bodies are not written to disk, and `tests/e2e/run.sh` checks that.
-- **The CA key can impersonate any site** to every device that trusts it. It stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. If it may have leaked, use **Regenerate the CA** and import the new certificate.
-- **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** on the Numbers card shows it.
+- **Only decrypted alerts show the real device.** Connections the proxy relays, and its own connections to sites, appear in Suricata as the Mikrokat host.
+- **A site can choose not to be inspected.** Like a port other than 443 or an IPv6 address, a hostile site can stay out of reach: if it resets the proxy's connection, or shows the proxy a certificate that fails, the proxy relays the browser on a fresh connection, and the site can answer that one normally.
+- **Only the chain, name and dates are checked.** Revocation and Certificate Transparency are lost for inspected sites, because the browser sees only the Mikrokat certificate. A site with a revoked certificate looks fine.
+- **URLs are written.** For every inspected request Suricata stores the host, URL, content type and user agent. An alert also stores the referrer, redirect target, method, status and length. A password or token in any of those URLs is therefore written. Passwords, cookies and bodies sent in headers or in the body are not written to disk, and `tests/e2e/run.sh` checks that.
+- **Two stores keep those URLs.** EVE follows **Keep logs for** on the Data tab, 1 to 90 days, up to 4 GB. EveBox stays at 7 days and 4 GB whatever is set, so lowering **Keep logs for** does not remove URLs from EveBox.
+- **Root on the host sees the plaintext.** It can capture it on `tzsp0`, up to the copy limit, though nothing stores it.
+- **The CA key can impersonate any site** to every device that trusts it. It stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. If it may have leaked, use **Regenerate the CA**, delete the old `Mikrokat local CA` from every device and import the new certificate. A new CA does not revoke the old one: a device keeps trusting the old key until you delete it there.
+- **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** on the Numbers card shows it. Frames can also be lost between the proxy and `tzsp` when the host is overloaded. That loss is not counted there, and `tests/e2e/run.sh` checks for it.
+- **Connections are limited.** The proxy holds at most 512 connections, 128 per device, and closes any over that at once. It closes a connection after 10 minutes with no bytes in either direction, which also ends a quiet websocket, and 60 seconds after one side has finished, so a hostile server cannot hold them open.
 - **Decrypted alerts never block.** They are recorded as `Would block`, also in Block mode. A web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.
 - **HTTP/1.1 only.** The proxy offers no HTTP/2, so sites answer over HTTP/1.1. A program that speaks only HTTP/2 is refused, and the automatic bypass does not apply to it, because the program never rejected the certificate. Add its names to the bypass list. The same goes for a program that only speaks a TLS version older than 1.2.
 - **A client certificate requested late fails.** A TLS 1.2 site that asks for one after the connection is up is refused by the proxy, and the page fails. Add its name to the bypass list.
@@ -242,13 +248,15 @@ git pull
 docker compose up -d --build
 ```
 
+The root certificates the proxy trusts are fixed in its image. To refresh them, run `docker compose build --pull --no-cache tlsproxy`, then `docker compose up -d`.
+
 ## Remove
 
 ```sh
 docker compose down -v
 ```
 
-Then delete the `data` folder, and remove the rules from the router as shown above.
+Then delete the `data` folder, and remove the rules from the router as shown above. If you used HTTPS inspection, delete `Mikrokat local CA` from every device, and destroy any backup that holds `data/tls/private`: until then that key can impersonate any site to a device that trusts it.
 
 ## Configuration
 

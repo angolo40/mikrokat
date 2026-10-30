@@ -68,8 +68,8 @@ Each connection follows the same steps, whichever entry it came from:
    - there is no server name
    - the name matches the bypass list or the automatic bypass
    - a leaf cannot be signed, because the CA has expired. The reason is `ca_expired`, and it adds no automatic entry
-5. Open TLS to the real server, verify its chain against the Mozilla roots, and offer only `http/1.1`.
-6. If that verification fails, relay the original connection untouched, so the client sees the real certificate and shows its usual warning. The proxy never hides a bad certificate.
+5. Open TLS to the real server, verify its chain, name and dates against the roots in the image, and offer only `http/1.1`.
+6. If that verification fails, relay the original connection untouched, so the client sees the real certificate and shows its usual warning. The proxy never hides a certificate that fails these checks. They are all it does: revocation and Certificate Transparency are lost for inspected sites, because the browser sees only our leaf, so a revoked certificate is hidden.
 7. Present a leaf certificate for the same name, signed by our CA.
 8. Relay bytes both ways and hand a copy to the emitter.
 
@@ -157,10 +157,11 @@ Alerts from decrypted traffic get a `decrypted` badge on Live and on the host pa
 
 ## Security and privacy
 
-- The CA key can impersonate any site to every device that trusts it. It never leaves `data/tls/private`. LXC backups contain it, and the guide says so.
+- The CA key can impersonate any site to every device that trusts it. It never leaves `data/tls/private`. LXC backups contain it, and the guide says so. Regenerate does not contain a leak by itself, because a new CA does not revoke the old one: the guide says to delete the old CA from every device, and on removal also to destroy backups that hold the key.
 - Each device trusts our CA by choice. For the first test only a Firefox profile does, not the operating system.
 - Passwords, cookies and bodies are never written to disk. `dump-all-headers`, `http-body` and alert `payload` stay off, and a test checks it.
-- Suricata's `http` events do store host, URL and user agent for decrypted traffic, for as long as EVE and EveBox keep them (7 days, 4 GB). URLs can hold tokens. This cannot be filtered per flow in Suricata, so Settings states it plainly.
+- Suricata's `http` events do store host, URL and user agent for decrypted traffic, and its alerts add the referrer and redirect target, so a password or token in a URL is written. EVE keeps them for `Keep logs for`, 1 to 90 days, up to 4 GB. EveBox keeps them for 7 days and 4 GB whatever is set. This cannot be filtered per flow in Suricata, so Settings states it plainly.
+- Root on the host can capture plaintext on `tzsp0` up to the copy limit, though nothing stores it.
 - The guide says to inspect only your own devices, or with the consent of the person using them.
 - Everything arriving at the proxy is attacker-controlled. The ClientHello and SOCKS parsers are bounded and fuzzed.
 
@@ -175,6 +176,9 @@ Alerts from decrypted traffic get a `decrypted` badge on Live and on the host pa
 | Real server has a bad certificate | Relayed, client warns | Same |
 | Client rejects our certificate | Automatic bypass after the second try within 10 minutes | Same |
 | Emitter queue full | Copy dropped and counted | Same |
+| CA has expired | Relayed, counted as `ca_expired` | Same |
+| Port cannot open, or the CA cannot load | Health alarm with the reason, PAC goes direct | Not decided yet |
+| Over a connection cap | Closed at once, counted as refused | Same |
 
 ## Delivery
 

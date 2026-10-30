@@ -52,7 +52,7 @@ NOTICES = {
     "blocked": "Blocked on the router.",
     "unblocked": "Removed from the router.",
     "unblocked-allowed": "Removed from the router and added to the allowlist.",
-    "ca-regenerated": "A new CA is being made. Import it again on every device.",
+    "ca-regenerated": "A new CA is being made. Delete the old Mikrokat local CA from every device and import the new one: a new CA does not revoke the old one.",
     "bypass-removed": "Removed. The proxy inspects that name again within a few seconds.",
 }
 STYLE = """
@@ -632,7 +632,7 @@ GUIDE = """<aside class="guide">
 <p>Leave Monitor on for a few days. Mute noisy rules from Overview and add your public addresses and other trusted hosts to the Allowlist. Then switch to Block.</p>
 <p>Every block shows on the Blocked page, where you can remove it.</p>
 <h2>7. Look inside HTTPS (optional)</h2>
-<p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac.</p>
+<p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac. Tick Proxy DNS when using SOCKS v5, so the proxy looks up each name.</p>
 <p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
 <p>Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
 </aside>"""
@@ -666,8 +666,9 @@ def https_card(host, switch, field):
     names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in list(store.names.items())[:20])
     known = f'<details class="howto"><summary>Known devices</summary><ul>{names}</ul></details>' if names else ""
     pac = f"http://{esc(host)}/tls.pac"
-    warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in the logs for as long as EVE and EveBox keep them. '
-               'Inspect only your own devices, or with the consent of the person using them.</p>')
+    warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in EVE for as long as Keep logs for says, and in EveBox for 7 days whatever is set. '
+               'Inspect only your own devices, or with the consent of the person using them.</p>'
+               '<p class="note">The built-in list names only a few banks, health and public services. Any other bank, payment or health site is decrypted unless you add it below first.</p>')
     options = (switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + '<div class="reveal">'
                + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
                + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
@@ -677,7 +678,7 @@ def https_card(host, switch, field):
                f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_bypass"]))}</textarea>'
                f'<span class="hint">One name per line, for example bank.example.com or *.example.com. Banks and health sites belong here.</span></label>'
                '<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>'
-               '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? Every device must import it again.\')">Regenerate the CA</button></div>')
+               '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button></div>')
     rows = "".join(
         f'<tr><td>{esc(str(e.get("device", "")))}</td><td>{esc(str(e.get("name", "")))}</td><td>{esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</td>'
         f'<td class="actions-cell"><button class="quiet" formaction="/tls/bypass/remove" name="entry" value="{esc(str(e.get("device", "")) + " " + str(e.get("name", "")), quote=True)}">Remove</button></td></tr>'

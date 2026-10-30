@@ -154,6 +154,16 @@ class Pac(Base):
 
 
 class Page(Base):
+    def test_warnings_next_to_the_switch(self):
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertIn("Any other bank, payment or health site is decrypted", page)
+        self.assertLess(page.index("Any other bank"), page.index('name="tls_enabled"'))
+
+    def test_regenerate_says_the_old_ca_stays_trusted(self):
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertIn("does not revoke the old one", page)
+        self.assertIn("does not revoke the old one", web.NOTICES["ca-regenerated"])
+
     def test_names_from_the_proxy_are_escaped(self):
         with open(os.path.join(store.TLS_DIR, "state", "stats.json"), "w") as target:
             json.dump({"at": 1, "relayed": {"<b>x</b>": 1}, "auto_bypass": [{"device": "10.0.0.5", "name": "<script>alert(1)</script>", "until": 2}]}, target)
