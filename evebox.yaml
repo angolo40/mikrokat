@@ -1,0 +1,5 @@
+# Limits for the EveBox database. Without a size limit it can fill a small disk within days.
+database:
+  retention:
+    days: 7
+    size: "4 GB"

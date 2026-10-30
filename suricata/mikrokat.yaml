@@ -1,0 +1,26 @@
+%YAML 1.1
+---
+# Mikrokat overrides on top of the default suricata.yaml. Each key here replaces the whole default
+# section, so single values are set with --set in docker-compose.yml instead.
+af-packet:
+  - interface: tzsp0
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    checksum-checks: no
+
+# One file per day: Mikrokat follows the newest and removes the old ones.
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve-%Y-%m-%d.json
+      rotate-interval: day
+      types:
+        - alert:
+            tagged-packets: no
+        - dns
+        - tls
+        - http
+        - flow

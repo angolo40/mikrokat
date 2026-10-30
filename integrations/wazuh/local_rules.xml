@@ -1,0 +1,20 @@
+<!-- Add to /var/ossec/etc/rules/local_rules.xml on the Wazuh manager, then restart it.
+     Rule 86601 is the Suricata alert rule shipped with Wazuh.
+     Level 12 matches the default email_alert_level. Change it if yours is different. -->
+<group name="mikrokat,suricata,">
+  <rule id="100900" level="7">
+    <if_sid>86601</if_sid>
+    <field name="mikrokat.action">\.+</field>
+    <description>Mikrokat: $(alert.signature) from $(src_ip) to $(dest_ip)</description>
+  </rule>
+  <rule id="100901" level="12" ignore="300">
+    <if_sid>100900</if_sid>
+    <field name="alert.severity">^1$</field>
+    <description>Mikrokat high severity: $(alert.signature) from $(src_ip) to $(dest_ip)</description>
+  </rule>
+  <rule id="100902" level="12">
+    <if_sid>100900</if_sid>
+    <field name="mikrokat.action">^Blocked</field>
+    <description>Mikrokat blocked $(mikrokat.target): $(alert.signature)</description>
+  </rule>
+</group>

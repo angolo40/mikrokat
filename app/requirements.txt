@@ -1,0 +1,2 @@
+librouteros==4.2.2
+maxminddb==3.2.0

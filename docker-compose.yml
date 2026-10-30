@@ -1,0 +1,109 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  tzsp:
+    build: ./tzsp
+    container_name: mikrokat-tzsp
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    environment:
+      TZSP_INTERFACE: tzsp0
+      TZSP_PORT: "37008"
+      TZSP_SOURCE: ${ROUTER_HOST:-}
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+  suricata:
+    image: jasonish/suricata:8.0.8
+    container_name: mikrokat-suricata
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    depends_on:
+      - tzsp
+    command: --include /mikrokat.yaml --af-packet=tzsp0 --set stream.checksum-validation=no --set detect.profile=low -v
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./suricata/mikrokat.yaml:/mikrokat.yaml:ro
+      - ./rules:/rules:ro
+      - suricata-run:/var/run/suricata
+      - suricata-etc:/etc/suricata
+      - ./data/logs:/var/log/suricata
+      - ./data/lib:/var/lib/suricata
+
+  mikrokat:
+    build: ./app
+    container_name: mikrokat-app
+    restart: unless-stopped
+    logging: *logging
+    env_file: .env
+    ports:
+      - "8088:8088"
+      - "5636:5636"
+    volumes:
+      - ./data/logs:/var/log/suricata
+      - ./data/app:/var/lib/mikrokat
+      - ./data/lib:/var/lib/suricata:ro
+      - ./rules:/rules
+      - suricata-run:/var/run/suricata
+      - /etc/localtime:/etc/localtime:ro
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+  # Applies rules/ when the web page asks. The app itself gets no access to Docker.
+  rules:
+    image: jasonish/suricata:8.0.8
+    container_name: mikrokat-rules
+    restart: unless-stopped
+    logging: *logging
+    entrypoint: ["/bin/sh", "/rules-watch.sh"]
+    volumes:
+      - ./tools/rules-watch.sh:/rules-watch.sh:ro
+      - ./rules:/rules
+      - suricata-etc:/etc/suricata
+      - ./data/lib:/var/lib/suricata
+      - suricata-run:/var/run/suricata
+    security_opt:
+      - no-new-privileges:true
+
+  evebox:
+    image: jasonish/evebox:0.31.0
+    container_name: mikrokat-evebox
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      - suricata
+    # Reached only through Mikrokat on port 5636, which handles the login.
+    command: evebox server -c /etc/evebox/evebox.yaml --host 0.0.0.0 --no-auth --no-tls --sqlite -D /var/lib/evebox /var/log/suricata/eve-*.json
+    volumes:
+      - ./data/logs:/var/log/suricata:ro
+      - ./data/evebox:/var/lib/evebox
+      - ./evebox.yaml:/etc/evebox/evebox.yaml:ro
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  suricata-etc:
+  suricata-run:

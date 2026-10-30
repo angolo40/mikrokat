@@ -1,0 +1,2 @@
+# Your own Suricata rules. Use SIDs from 1000000 to 1999999.
+# alert tcp $EXTERNAL_NET any -> $HOME_NET 22 (msg:"Local: SSH from outside"; flow:to_server,established; sid:1000001; rev:1;)
