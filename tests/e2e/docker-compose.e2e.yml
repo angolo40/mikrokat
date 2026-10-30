@@ -1,0 +1,7 @@
+# Added by tests/e2e/run.sh only: the proxy also trusts the private CA of the test server.
+services:
+  tlsproxy:
+    environment:
+      SSL_CERT_FILE: /e2e/test-ca.pem
+    volumes:
+      - ${E2E_WORK:?run.sh sets this}/test-ca.pem:/e2e/test-ca.pem:ro

@@ -16,6 +16,7 @@ It is the lightweight successor of [mikrocata2selks](https://github.com/angolo40
 - **Health alarms:** warns you if traffic stops arriving, the rules get old, the disk fills up or the router stops answering.
 - **Automatic rule updates:** daily or weekly, without stopping Suricata.
 - **Live page:** alerts and actions as they happen, with repeats grouped.
+- **HTTPS inspection:** optional and off by default. Suricata can read the HTTPS of the devices you choose.
 - **Blocking:** automatic or by hand, through a MikroTik address list. Blocks are put back after a router restart, and repeat offenders can be blocked for longer.
 - **Safe by default:** starts in Monitor mode, which only reports. Private networks and major DNS servers are protected from blocks.
 - **Notifications:** Telegram, email and webhooks for Slack, Discord, Microsoft Teams or your own service, plus an optional daily summary.
@@ -44,6 +45,7 @@ The router copies traffic to Mikrokat with TZSP. Mikrokat only sees what the rou
 | `mikrokat-app` | Web pages, alert handling, blocking, notifications |
 | `mikrokat-evebox` | Event browser |
 | `mikrokat-rules` | Applies rule updates on request |
+| `mikrokat-tlsproxy` | Optional HTTPS inspection. Listens on nothing while it is off |
 
 ## Requirements
 
@@ -63,6 +65,8 @@ You also need:
 
 **Measured use:** about 600 MB of RAM and 1.1 GB of images, with 53,000 rules on a 4-core Intel N305. At about 3,000 packets per second (20 Mbps), Suricata and the TZSP receiver used about 5% of one core each. Applying rules briefly needs 500 MB more. Heavier links need more CPU, so watch **Packets dropped** on the Overview page.
 
+**HTTPS inspection:** while off, `mikrokat-tlsproxy` uses about 3 MB of RAM and opens no port. While on, on the same CPU and with both ends on that host, a 1 GiB download through it reached 2.4 to 3 Gbps, with the proxy using one core and 13 MB of RAM. With 100 downloads at once and its queue full it peaked at about 105 MB. The copy for Suricata is paced to about 10 MB/s: of a 1 MiB burst, 1,546 frames were sent and 1,546 arrived.
+
 Disk use is capped: Suricata logs at 4 GB, the EveBox database at 4 GB, and container logs at 30 MB each.
 
 Do not run Mikrokat on the router. A container on a MikroTik device has little memory, slows routing, and puts a parser of hostile traffic on your gateway.
@@ -80,7 +84,7 @@ docker compose up -d
 grep WEB_PASSWORD .env
 ```
 
-The first run takes a few minutes: it builds two images and downloads the others and the rules. The last line shows your password.
+The first run takes a few minutes: it builds three images and downloads the others and the rules. The last line shows your password.
 
 Open `http://<host>:8088` and sign in as `admin`. The Settings page has a setup guide next to the form, and you can change the password there.
 
@@ -148,7 +152,7 @@ To remove everything from the router:
 | **Blocked** | The block list: block and unblock by hand, in any mode |
 | **Rules** | Turn rules off, add your own, apply updates |
 | **Allowlist** | Addresses that are never blocked or reported |
-| **Settings** | Protection, notifications, router, data and account |
+| **Settings** | Protection, notifications, router, data, HTTPS inspection and account |
 | **Events** | EveBox, on port 5636 |
 
 ## Rules
@@ -156,6 +160,50 @@ To remove everything from the router:
 Mikrokat starts from ET Open and updates it every day at 04:00. You can change that on the Data tab of Settings. On the Rules page you can turn rules off, add your own and press **Apply rules** to update right away, without stopping Suricata. The same files live in `rules/` if you prefer an editor, and `tools/update-rules.sh` applies them.
 
 To keep a rule in Events but stop its notifications and blocks, use **Mute**.
+
+## HTTPS inspection
+
+Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It keeps a copy of the traffic and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
+
+It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site with a bad certificate is passed through untouched, so the browser shows its usual warning. If the proxy stops, browsers using the PAC file below go direct, and a health alarm appears within about two minutes.
+
+**Inspect only your own devices, or with the consent of the person using them.** Whoever runs Mikrokat can see the URLs they open.
+
+### What stays encrypted
+
+Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab counts them by reason.
+
+- Devices that are not on your list, and programs on a listed device that do not use the proxy.
+- Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one.
+- Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After the first refusal, that device and name are relayed untouched for 24 hours.
+- Sites that ask for a client certificate, and sites with a bad certificate.
+- Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
+- Ports other than 443, private addresses, and IPv6 addresses.
+- QUIC. The proxy takes TCP only, so browsers fall back to TCP.
+- Everything after the first 1 MiB in each direction of a connection. It is relayed, but no copy is kept. A rule on an HTTP response body sees less: Suricata reads the first 100 KiB by default.
+
+### Set up one Firefox profile
+
+1. On the HTTPS inspection tab of Settings, add the address of the device, turn on the switch and save.
+2. On the same tab, use **Download the CA certificate**.
+3. In Firefox, open `about:profiles`, create a new profile and launch it. Only this profile will trust the CA, not the rest of the computer.
+4. In that profile, open Settings, Privacy & Security, Certificates, View Certificates, Authorities, then Import. Choose the file and tick **Trust this CA to identify websites**.
+5. Under Settings, General, Network Settings, choose **Automatic proxy configuration URL** and enter `http://<host>:8088/tls.pac`.
+
+To check it, open a site in that profile and look at its certificate: the issuer is `Mikrokat local CA`.
+
+### The PAC file
+
+`/tls.pac` tells a browser where to send its traffic, and it needs no login. While the feature is on, it answers `SOCKS5 <host>:1080; DIRECT`, which means use the proxy, or go direct if the proxy does not answer. While the feature is off, it answers `DIRECT`. Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if they trust the CA.
+
+### Limits
+
+- **Apps must be configured.** Nothing on the router changes, so a program is inspected only if it is set to use the proxy and trusts the CA.
+- **A program can ignore SOCKS.** A proxy setting is a request, not a control. Do not count on this to catch software that wants to hide.
+- **URLs stay in the logs.** Suricata stores the host, URL and user agent of inspected requests for as long as EVE and EveBox keep them, up to 7 days and 4 GB. URLs can hold tokens. Passwords, cookies and bodies are not written to disk, and `tests/e2e/run.sh` checks that.
+- **The CA key can impersonate any site** to every device that trusts it. It stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. If it may have leaked, use **Regenerate the CA** and import the new certificate.
+- **HTTP/1.1 only.** The proxy offers no HTTP/2, so sites answer over HTTP/1.1.
+- **A client certificate requested late fails.** A TLS 1.2 site that asks for one after the connection is up is refused by the proxy, and the page fails. Add its name to the bypass list.
 
 ## Sending alerts to a SIEM
 
