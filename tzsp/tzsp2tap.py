@@ -67,7 +67,7 @@ def main():
     last = time.monotonic()
     while True:
         packet, addr = sock.recvfrom(65535)
-        if SOURCE and addr[0] != SOURCE:
+        if SOURCE and addr[0] not in (SOURCE, "127.0.0.1"):
             rejected += 1
             continue
         frame = decapsulate(packet)

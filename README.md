@@ -90,7 +90,7 @@ To check the path without touching the router (needs `python3`):
 python3 tools/send-test-alert.py
 ```
 
-A `Would block` entry appears on the Overview page. Leave `ROUTER_HOST` empty in `.env` for this test, because it limits TZSP to your router.
+A `Would block` entry appears on the Overview page. `ROUTER_HOST` can stay set: Mikrokat also accepts TZSP from its own host (`127.0.0.1`).
 
 ## Router setup
 

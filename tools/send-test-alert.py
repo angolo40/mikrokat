@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send a fake HTTP session over TZSP that matches the classic 'id check returned root' rule.
 
-Usage: send-test-alert.py [host] [port]. Use it to check the path from TZSP to the notification.
+Usage: send-test-alert.py [host] [port] [vlan]. With a VLAN id the frames carry an 802.1Q tag. Use it to check the path from TZSP to the notification.
 """
 import socket
 import struct
@@ -10,6 +10,7 @@ import time
 
 HOST = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 37008
+VLAN = int(sys.argv[3]) if len(sys.argv) > 3 else None
 CLIENT, SERVER = "192.168.50.10", "198.51.100.7"
 CMAC, SMAC = bytes.fromhex("02000000000a"), bytes.fromhex("020000000014")
 
@@ -29,7 +30,8 @@ def frame(src, dst, smac, dmac, sport, dport, seq, ack, flags, payload=b""):
     tcp = tcp[:16] + struct.pack("!H", checksum(pseudo + tcp + payload)) + tcp[18:]
     ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + len(payload), 1, 0x4000, 64, 6, 0, s, d)
     ip = ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:]
-    return dmac + smac + b"\x08\x00" + ip + tcp + payload
+    tag = struct.pack("!HH", 0x8100, VLAN) if VLAN is not None else b""
+    return dmac + smac + tag + b"\x08\x00" + ip + tcp + payload
 
 
 def main():
