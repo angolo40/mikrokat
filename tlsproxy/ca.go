@@ -47,6 +47,10 @@ func LoadCA(privateDir, stateDir string, generation int) (*CA, error) {
 	if err := os.MkdirAll(privateDir, 0o700); err != nil {
 		return nil, err
 	}
+	// MkdirAll leaves a folder that already exists as it is.
+	if err := os.Chmod(privateDir, 0o700); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return nil, err
 	}

@@ -145,7 +145,8 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 
 	offered := false
 	toClient := tls.Server(&bufferedConn{Conn: client, r: br}, &tls.Config{
-		NextProtos: []string{"http/1.1"},
+		NextProtos:             []string{"http/1.1"},
+		SessionTicketsDisabled: true, // a resumed session would skip the leaf of the current CA
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			offered = true
 			return leaf, nil

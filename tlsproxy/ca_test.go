@@ -319,3 +319,23 @@ func TestReplacementLogged(t *testing.T) {
 		t.Fatalf("log %q", buf.String())
 	}
 }
+
+func TestPrivateDirTightened(t *testing.T) {
+	priv := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(priv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(priv, 0o755); err != nil { // whatever the umask left
+		t.Fatal(err)
+	}
+	if _, err := LoadCA(priv, t.TempDir(), 1); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := st.Mode().Perm(); m != 0o700 {
+		t.Fatalf("mode %04o", m)
+	}
+}

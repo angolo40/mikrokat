@@ -393,6 +393,40 @@ func TestOnlyHTTP11Offered(t *testing.T) {
 	}
 }
 
+// countingCache counts the session tickets a client is given.
+type countingCache struct{ tickets atomic.Int64 }
+
+func (c *countingCache) Get(string) (*tls.ClientSessionState, bool) { return nil, false }
+
+func (c *countingCache) Put(_ string, cs *tls.ClientSessionState) {
+	if cs != nil {
+		c.tickets.Add(1)
+	}
+}
+
+// A resumed session shows no certificate, so the client must get a full
+// handshake with a leaf from the current CA every time.
+func TestNoSessionTickets(t *testing.T) {
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		t.Run(tls.VersionName(version), func(t *testing.T) {
+			srv := tlsServer(t)
+			r := newRig(t, srv.Listener.Addr().String())
+			r.Roots = poolOf(srv.Certificate())
+			cache := &countingCache{}
+			cfg := r.clientConfig()
+			cfg.ClientSessionCache = cache
+			cfg.MinVersion, cfg.MaxVersion = version, version
+			raw, _ := r.connect(t.Context(), t, testDest)
+			if reply := get(t, tls.Client(raw, cfg), "/x"); !strings.Contains(reply, "reply to /x") {
+				t.Fatalf("reply %q", reply)
+			}
+			if n := cache.tickets.Load(); n != 0 {
+				t.Fatalf("%d session tickets", n)
+			}
+		})
+	}
+}
+
 func TestBadUpstreamRelaysOriginal(t *testing.T) {
 	srv := tlsServer(t)
 	cases := []struct {

@@ -2,6 +2,7 @@
 # End-to-end test of HTTPS inspection, for a disposable host with the stack running.
 # Run it as root. It recreates tlsproxy, restarts mikrokat and applies the rules, and it leaves the
 # feature off and its own rules gone, also when a check fails. It is safe to run again.
+# It needs python3, curl, openssl and iproute2 on the host.
 #
 #   tests/e2e/run.sh           runs the checks and prints PASS, or the check that failed
 #   tests/e2e/run.sh measure   prints RAM, CPU, throughput and frame numbers

@@ -32,7 +32,7 @@ postfinance.ch
 raiffeisen.ch
 zkb.ch
 
-# Health, Italy and Switzerland
+# Health and public services, Italy
 fascicolosanitario.gov.it
 agenziaentrate.gov.it
 inps.it
