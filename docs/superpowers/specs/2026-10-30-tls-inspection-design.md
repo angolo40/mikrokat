@@ -67,6 +67,7 @@ Each connection follows the same steps, whichever entry it came from:
    - the destination is IPv6, or private, which only the transparent entry can bring here
    - there is no server name
    - the name matches the bypass list or the automatic bypass
+   - a leaf cannot be signed, because the CA has expired. The reason is `ca_expired`, and it adds no automatic entry
 5. Open TLS to the real server, verify its chain against the Mozilla roots, and offer only `http/1.1`.
 6. If that verification fails, relay the original connection untouched, so the client sees the real certificate and shows its usual warning. The proxy never hides a bad certificate.
 7. Present a leaf certificate for the same name, signed by our CA.

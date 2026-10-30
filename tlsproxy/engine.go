@@ -102,6 +102,14 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 		passThrough(reason, upstream)
 		return
 	}
+	// Before the upstream handshake, while the first connection is still clean:
+	// devices keep working through a CA that has run out, uninspected. No
+	// client has rejected anything, so this adds no automatic entry.
+	leaf, err := e.CA.Load().Leaf(h.Name)
+	if err != nil {
+		passThrough("ca_expired", upstream)
+		return
+	}
 
 	toServer := tls.Client(upstream, &tls.Config{
 		ServerName: h.Name,
@@ -131,15 +139,12 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 		return
 	}
 
-	var leafErr error
 	offered := false
 	toClient := tls.Server(&bufferedConn{Conn: client, r: br}, &tls.Config{
 		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			offered = true
-			var cert *tls.Certificate
-			cert, leafErr = e.CA.Load().Leaf(h.Name)
-			return cert, leafErr
+			return leaf, nil
 		},
 	})
 	if err := handshake(ctx, toClient); err != nil {
@@ -148,7 +153,7 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 		timedOut := errors.As(err, &ne) && ne.Timeout()
 		// A TLS version or ALPN the proxy refuses ends the handshake before any
 		// certificate is chosen, so that client has not rejected ours.
-		if offered && leafErr == nil && !timedOut && ctx.Err() == nil {
+		if offered && !timedOut && ctx.Err() == nil {
 			e.Bypass.Failed(device.String(), h.Name, e.now())
 		}
 		return

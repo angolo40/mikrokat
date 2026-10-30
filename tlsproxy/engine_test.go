@@ -706,23 +706,41 @@ func TestProxyRefusalAddsNoAuto(t *testing.T) {
 	}
 }
 
-func TestLeafErrorAddsNoAuto(t *testing.T) {
+// A running proxy whose CA has expired must not take the devices down with it.
+func TestExpiredCARelays(t *testing.T) {
 	srv := tlsServer(t)
 	r := newRig(t, srv.Listener.Addr().String())
 	r.Roots = poolOf(srv.Certificate())
 	r.CA.Load().cert.NotAfter = time.Now().Add(-time.Minute)
-	raw, done := r.connect(t.Context(), t, testDest)
-
-	if err := tls.Client(raw, r.clientConfig()).Handshake(); err == nil {
-		t.Fatal("handshake passed with an expired CA")
+	var dials atomic.Int64
+	first := r.Dial
+	r.Dial = func(ctx context.Context, d Dest) (net.Conn, error) {
+		dials.Add(1)
+		return first(ctx, d)
 	}
-	waitFor(t, done)
-	if n := statsHandshakes(r.Stats); n != 1 {
+	raw, _ := r.connect(t.Context(), t, testDest)
+
+	// The client accepts anything, to show what it was given.
+	c := tls.Client(raw, &tls.Config{ServerName: testName, InsecureSkipVerify: true})
+	if reply := get(t, c, "/x"); !strings.Contains(reply, "reply to /x") {
+		t.Fatalf("reply %q", reply)
+	}
+	if !c.ConnectionState().PeerCertificates[0].Equal(srv.Certificate()) {
+		t.Fatal("client did not see the server's own certificate")
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("%d dials, want the first connection only", n)
+	}
+	if n := statsRelayed(r.Stats, "ca_expired"); n != 1 {
+		t.Fatalf("relayed ca_expired %d", n)
+	}
+	if n := statsHandshakes(r.Stats); n != 0 {
 		t.Fatalf("handshake failures %d", n)
 	}
 	if got := r.Bypass.Auto(time.Now()); len(got) != 0 {
 		t.Fatalf("automatic entries %v", got)
 	}
+	r.sink.none(t)
 }
 
 func TestStalledClientHandshake(t *testing.T) {

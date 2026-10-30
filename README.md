@@ -177,6 +177,7 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 - Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one.
 - Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
+- Everything, once the CA has expired. Connections keep working and are counted as `ca_expired`. Press **Regenerate the CA** before that.
 - Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
 - Ports other than 443, and IPv6 addresses.
 - QUIC. The proxy takes TCP only, so browsers fall back to TCP.
