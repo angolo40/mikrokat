@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -135,8 +137,8 @@ type Server struct {
 	listFailed bool   // the current failure to list interfaces is already logged
 }
 
-// NewServer returns a Server with the port closed. The CA is loaded into e.CA
-// the first time the feature is enabled.
+// NewServer returns a Server with the port closed. The first CA is made and
+// loaded into e.CA the first time the feature is enabled.
 func NewServer(e *Engine, privateDir, stateDir string) *Server {
 	return &Server{
 		Engine:     e,
@@ -178,6 +180,12 @@ func (s *Server) Apply(cfg Config) bool {
 			problem = "no interface list"
 			open = false
 		}
+	} else if cfg.CAGeneration != 0 && s.caStored() {
+		// Regenerate does not wait for the next switch-on. Generation 0 is
+		// where a missing control file lands, and nobody asked for that one.
+		if err := s.loadCA(cfg.CAGeneration); err != nil {
+			problem = fmt.Sprintf("CA failed: %v", err)
+		}
 	}
 	if s.ln != nil && (!open || cfg.SocksPort != s.port) {
 		s.ln.Close()
@@ -190,7 +198,7 @@ func (s *Server) Apply(cfg Config) bool {
 		}
 	}
 	if problem != "" {
-		state = "on, port closed: " + problem
+		state = "port closed: " + problem
 	}
 	for device, group := range s.conns {
 		if !open || !cfg.Allowed(net.ParseIP(device)) {
@@ -221,6 +229,13 @@ func (s *Server) readInterfaces() {
 	}
 	s.listFailed = false
 	s.local.Store(newLocalNets(ifaces))
+}
+
+// caStored reports whether a CA was ever made. The first one waits for the
+// feature to be turned on.
+func (s *Server) caStored() bool {
+	_, err := os.Stat(filepath.Join(s.PrivateDir, "ca.key"))
+	return err == nil
 }
 
 // loadCA stores the CA of this generation, unless it is already there.

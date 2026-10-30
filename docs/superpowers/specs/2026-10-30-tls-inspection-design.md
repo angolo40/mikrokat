@@ -109,7 +109,7 @@ Mikrokat adds and removes devices in `mikrokat-tls` through its existing router 
 
 The proxy creates a private CA the first time the feature is turned on: ECDSA P-256, two years. Leaf certificates are ECDSA P-256, valid 30 days, and cached in memory.
 
-The CA key stays in `data/tls/private`, mounted only in `tlsproxy`, mode 600. The public certificate is downloadable from Settings. A Regenerate button replaces the pair, and devices must then import the new one.
+The CA key stays in `data/tls/private`, mounted only in `tlsproxy`, mode 600. The public certificate is downloadable from Settings. A Regenerate button replaces the pair at once, whether or not the feature is on, and devices must then import the new one.
 
 ### Bypass
 

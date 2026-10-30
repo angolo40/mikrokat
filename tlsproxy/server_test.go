@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -609,12 +610,68 @@ func TestCAReload(t *testing.T) {
 		t.Fatal("listener reopened")
 	}
 	roundTrip(t, c)
-	// A generation that changed while off counts at the next switch-on.
-	r.Apply(Config{})
-	r.cfg.CAGeneration++
+}
+
+func readPEM(t *testing.T, r *socksRig) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(r.StateDir, "ca.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestRegenerateWhileOff(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
 	r.Apply(r.cfg)
-	if r.Engine.CA.Load() == second {
-		t.Fatal("CA not replaced after a change while off")
+	first := readPEM(t, r)
+	off := Config{CAGeneration: r.cfg.CAGeneration + 1}
+	r.Apply(off)
+	second := readPEM(t, r)
+	if second == first {
+		t.Fatal("ca.pem not replaced while off")
+	}
+	r.Apply(off)
+	if readPEM(t, r) != second {
+		t.Fatal("ca.pem replaced twice")
+	}
+	if got := r.Engine.CA.Load().cert; !strings.Contains(second, base64.StdEncoding.EncodeToString(got.Raw)[:60]) {
+		t.Fatal("the proxy holds another CA than ca.pem")
+	}
+	r.cfg.CAGeneration = off.CAGeneration
+	r.Apply(r.cfg)
+	if readPEM(t, r) != second {
+		t.Fatal("ca.pem replaced again at the switch-on")
+	}
+}
+
+func TestRegenerateWhileOffAfterRestart(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Apply(r.cfg)
+	first := readPEM(t, r)
+	// A new process has no CA in memory, and the generation moved while it was down.
+	restarted := NewServer(&Engine{
+		CA:     new(atomic.Pointer[CA]),
+		Bypass: NewBypass(nil),
+		Stats:  r.Engine.Stats,
+	}, r.PrivateDir, r.StateDir)
+	restarted.Interfaces = r.Interfaces
+	restarted.Apply(Config{CAGeneration: 5})
+	if readPEM(t, r) == first {
+		t.Fatal("ca.pem not replaced while off")
+	}
+}
+
+// A missing control file reads as generation 0. It is no request for a new CA,
+// which would break every device that trusts the old one.
+func TestNoControlFileKeepsCA(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.cfg.CAGeneration = 2
+	r.Apply(r.cfg)
+	first := readPEM(t, r)
+	r.Apply(Config{})
+	if readPEM(t, r) != first {
+		t.Fatal("ca.pem replaced by an empty configuration")
 	}
 }
 
