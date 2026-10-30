@@ -76,6 +76,8 @@ services:
     volumes:
       - ./data/logs:/var/log/suricata
       - ./data/app:/var/lib/mikrokat
+      - ./data/tls/control:/var/lib/mikrokat-tls/control
+      - ./data/tls/state:/var/lib/mikrokat-tls/state:ro
       - ./data/lib:/var/lib/suricata:ro
       - ./rules:/rules
       - suricata-run:/var/run/suricata

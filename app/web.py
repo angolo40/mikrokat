@@ -52,6 +52,8 @@ NOTICES = {
     "blocked": "Blocked on the router.",
     "unblocked": "Removed from the router.",
     "unblocked-allowed": "Removed from the router and added to the allowlist.",
+    "ca-regenerated": "A new CA is being made. Import it again on every device.",
+    "bypass-removed": "Removed. The proxy inspects that name again within a few seconds.",
 }
 STYLE = """
 :root { color-scheme: light; --surface: #fcfcfb; --raised: #f4f3ef; --card: #ffffff; --line: #e4e3de; --text: #0b0b0b; --muted: #5f5e5a;
@@ -626,10 +628,63 @@ GUIDE = """<aside class="guide">
 <h2>6. Start in Monitor</h2>
 <p>Leave Monitor on for a few days. Mute noisy rules from Overview and add your public addresses and other trusted hosts to the Allowlist. Then switch to Block.</p>
 <p>Every block shows on the Blocked page, where you can remove it.</p>
+<h2>7. Look inside HTTPS (optional)</h2>
+<p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac.</p>
+<p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
 </aside>"""
 
 
-SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("account", "Account"))
+def pac_text(host):
+    """Return the proxy auto-config script. The Host header is attacker-controlled and ends up inside a JavaScript string."""
+    s = store.settings
+    found = re.fullmatch(r"(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?", host.strip())
+    if not (found and s["tls_enabled"] and s["tls_socks"]):
+        return 'function FindProxyForURL(url, host) {\n  return "DIRECT";\n}\n'
+    return ('function FindProxyForURL(url, host) {\n  if (isPlainHostName(host)) return "DIRECT";\n'
+            f'  return "SOCKS5 {found.group(1)}:{int(s["tls_socks_port"])}; DIRECT";\n}}\n')
+
+
+def https_card(host, switch, field):
+    """The HTTPS inspection tab. Names in stats.json came from client traffic, so everything from it is escaped."""
+    s = store.settings
+    stats = store.tls_status()
+    names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in list(store.names.items())[:20])
+    known = f'<details class="howto"><summary>Known devices</summary><ul>{names}</ul></details>' if names else ""
+    pac = f"http://{esc(host)}/tls.pac"
+    warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in the logs for as long as EVE and EveBox keep them. '
+               'Inspect only your own devices, or with the consent of the person using them.</p>')
+    options = (switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + '<div class="reveal">'
+               + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
+               + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
+               f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
+               f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
+               f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}'
+               f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_bypass"]))}</textarea>'
+               f'<span class="hint">One name per line, for example bank.example.com or *.example.com. Banks and health sites belong here.</span></label>'
+               '<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>'
+               '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? Every device must import it again.\')">Regenerate the CA</button></div>')
+    rows = "".join(
+        f'<tr><td>{esc(str(e.get("device", "")))}</td><td>{esc(str(e.get("name", "")))}</td><td>{esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</td>'
+        f'<td class="actions-cell"><button class="quiet" formaction="/tls/bypass/remove" name="entry" value="{esc(str(e.get("device", "")) + " " + str(e.get("name", "")), quote=True)}">Remove</button></td></tr>'
+        for e in stats.get("auto_bypass", []) if isinstance(e, dict))
+    auto = table(["Device", "Name", "Until", ""], [], "Nothing was skipped automatically.") if not rows else \
+        f'<table><thead><tr><th>Device</th><th>Name</th><th>Until</th><th></th></tr></thead><tbody>{rows}</tbody></table>'
+    relayed = stats.get("relayed") if isinstance(stats.get("relayed"), dict) else {}
+    relayed_text = ", ".join(f"{esc(str(k))}: {esc(str(v))}" for k, v in sorted(relayed.items())) or "none"
+    if stats:
+        age = int(time.time()) - stats["at"] if isinstance(stats.get("at"), int) else None
+        counters = (f'<p class="hint">Inspected: {esc(str(stats.get("inspected", 0)))}. Passed through uninspected: {relayed_text}. Refused: {esc(str(stats.get("refused", 0)))}. '
+                    f'Handshake failures: {esc(str(stats.get("handshake_failures", 0)))}. Copied: {esc(str(stats.get("copied_bytes", 0)))} bytes. '
+                    f'Copies dropped: {esc(str(stats.get("copies_dropped", 0)))}.' + (f' Updated {age} seconds ago.' if age is not None else "") + '</p>')
+    else:
+        counters = '<p class="hint">No numbers from the proxy yet.</p>'
+    return (f'<section class="card"><h2>HTTPS inspection</h2><p>Lets Suricata see inside the HTTPS of chosen devices, through a proxy that rebuilds the traffic as plain HTTP for it. Off by default.</p>'
+            f'{warning}{options}</div></section>'
+            f'<section class="card"><h2>Skipped automatically</h2><p>When a site refuses the Mikrokat certificate, the proxy lets it through untouched for 24 hours.</p>{auto}</section>'
+            f'<section class="card"><h2>Numbers</h2>{counters}</section>')
+
+
+SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("https", "HTTPS inspection"), ("account", "Account"))
 
 
 def settings_page(host, notice="", error="", tab=""):
@@ -733,7 +788,7 @@ def settings_page(host, notice="", error="", tab=""):
                  + field("Address", "ai_url", s["ai_url"], hint="Any OpenAI-compatible API, such as http://host:11434/v1 for Ollama")
                  + field("Model", "ai_model", s["ai_model"]) + secret("API key", "ai_key", s["ai_key"], "Leave empty for a local model.")
                  + field("Answer language", "ai_language", s["ai_language"]) + '</div></div></section>')
-    panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "account": account}
+    panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "https": https_card(host, switch, field), "account": account}
     radios = "".join(f'<input type="radio" name="tab" id="tab-{k}" value="{k}"{checked(k == tab)}>' for k, _ in SETTINGS_TABS)
     labels = "".join(f'<label for="tab-{k}">{t}</label>' for k, t in SETTINGS_TABS)
     content = "".join(f'<div class="pane" id="pane-{k}">{panes[k]}</div>' for k, _ in SETTINGS_TABS)
@@ -1000,7 +1055,31 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/auth/callback":
             self.single_sign_on_done(urllib.parse.parse_qs(url.query))
             return
+        if url.path == "/tls.pac":
+            data = pac_text(self.headers.get("Host", "")).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ns-proxy-autoconfig")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if not self.authorized():
+            return
+        if url.path == "/tls/ca.pem":
+            try:
+                with open(os.path.join(store.TLS_DIR, "state", "ca.pem"), "rb") as source:
+                    data = source.read()
+            except OSError:
+                self.send_error(404, "The proxy has not made a CA yet")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", 'attachment; filename="mikrokat-ca.pem"')
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
             return
         if url.path == "/live/stream":
             self.stream()
@@ -1079,6 +1158,27 @@ class Handler(BaseHTTPRequestHandler):
             actions.reset()
             actions.reset_copy()
             done, page = "saved", "/settings"
+        elif self.path in ("/tls/regenerate", "/tls/bypass/remove"):
+            if self.path == "/tls/regenerate":
+                error, done = store.regenerate_ca(), "ca-regenerated"
+            else:
+                device, _, name = form.get("entry", "").partition(" ")
+                try:
+                    ipaddress.ip_address(device)
+                except ValueError:
+                    error = "That entry does not look right."
+                else:
+                    error = store.remove_auto_bypass(device, name[:253])
+                done = "bypass-removed"
+            page = "/settings"
+            if error:
+                self.reply(settings_page(host, "", error, "https"))
+                return
+            store.activity_add("system", "Regenerated the HTTPS inspection CA" if self.path == "/tls/regenerate" else "Removed an automatic HTTPS bypass")
+            self.send_response(303)
+            self.send_header("Location", f"/settings?ok={done}&tab=https")
+            self.end_headers()
+            return
         elif self.path == "/block":
             error = manual_block(form)
             done, page = "blocked", back or "/blocked"

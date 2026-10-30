@@ -17,6 +17,8 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 BLOCKS_FILE = os.path.join(DATA_DIR, "blocks.json")
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 DATABASE = os.path.join(DATA_DIR, "stats.db")
+TLS_DIR = os.environ.get("TLS_DIR", "/var/lib/mikrokat-tls")
+TLS_PORTS_TAKEN = (8088, 5636, 37008, 8443)
 STATS_DAYS = 30
 
 FIXED_ALLOWLIST = [ipaddress.ip_network(n.strip(), strict=False) for n in os.environ.get(
@@ -42,6 +44,13 @@ settings = {
     "ai_model": "",
     "ai_key": "",
     "ai_language": "English",
+    "tls_enabled": False,
+    "tls_socks": True,
+    "tls_socks_port": 1080,
+    "tls_devices": [],
+    "tls_bypass": [],
+    "tls_ca_generation": 0,
+    "tls_auto_remove": [],
     "router_host": os.environ.get("ROUTER_HOST", ""),
     "router_user": os.environ.get("ROUTER_USER", "mikrokat"),
     "router_password": os.environ.get("ROUTER_PASSWORD", ""),
@@ -149,6 +158,7 @@ def load():
     router_uptime = saved.get("router_uptime", 0)
     schedule.update(read_json(SCHEDULE_FILE, {}))
     rebuild_networks()
+    write_tls_control()
     with database() as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS hourly_alerts (hour TEXT, severity INT, sid INT, signature TEXT, count INT, PRIMARY KEY (hour, sid));
@@ -159,6 +169,48 @@ def load():
             CREATE TABLE IF NOT EXISTS explanations (sid INT PRIMARY KEY, text TEXT, at TEXT);
             CREATE TABLE IF NOT EXISTS actions (at TEXT, address TEXT, severity INT, sid INT, signature TEXT, action TEXT, outbound INT);
         """)
+
+
+def write_tls_control():
+    """Write the control file the TLS proxy reads. Return an error message, or None when it worked.
+
+    It holds no secret, so the proxy container can read it whoever owns it. The caller decides about the lock.
+    """
+    config = {"enabled": settings["tls_enabled"], "socks": settings["tls_socks"], "socks_port": settings["tls_socks_port"],
+              "devices": list(settings["tls_devices"]), "bypass": list(settings["tls_bypass"]),
+              "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"])}
+    path = os.path.join(TLS_DIR, "control", "config.json")
+    temp = path + ".tmp"
+    try:
+        with open(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644), "w", encoding="utf-8") as target:
+            json.dump(config, target)
+        os.replace(temp, path)
+    except OSError as failure:
+        print(f"[mikrokat] cannot write the TLS control file: {failure}", flush=True)
+        return "Saved, but the HTTPS inspection control file could not be written."
+    return None
+
+
+def tls_status():
+    """Return the counters the TLS proxy wrote, or {} when there are none yet or the file is not valid."""
+    value = read_json(os.path.join(TLS_DIR, "state", "stats.json"), {})
+    return value if isinstance(value, dict) else {}
+
+
+def regenerate_ca():
+    """Ask the TLS proxy for a new CA. Every device has to import the new certificate."""
+    with lock:
+        settings["tls_ca_generation"] += 1
+        write_json(SETTINGS_FILE, settings)
+    return write_tls_control()
+
+
+def remove_auto_bypass(device, name):
+    """Ask the TLS proxy to drop one automatic bypass. Only the last 50 requests are kept."""
+    with lock:
+        settings["tls_auto_remove"] = (settings["tls_auto_remove"] + [{"device": device, "name": name, "at": int(time.time())}])[-50:]
+        write_json(SETTINGS_FILE, settings)
+    return write_tls_control()
 
 
 def hash_password(password):
@@ -369,6 +421,36 @@ def save_settings(form):
         return "The traffic alarm goes from 1 to 1440 minutes."
     if not 0 <= dedupe <= 86400 or not 1 <= retention <= 90:
         return "Repeat time goes from 0 to 86400 seconds, log days from 1 to 90."
+    tls = bool(form.get("tls_enabled"))
+    tls_devices = []
+    for line in form.get("tls_devices", "").splitlines():
+        if line.strip():
+            try:
+                address = str(ipaddress.ip_address(line.strip()))
+            except ValueError:
+                return f"Not a valid device address: {line.strip()[:60]}"
+            if address not in tls_devices:
+                tls_devices.append(address)
+    if len(tls_devices) > 64:
+        return "HTTPS inspection takes at most 64 devices."
+    tls_bypass = []
+    for line in form.get("tls_bypass", "").splitlines():
+        name = line.strip().lower()
+        if name:
+            if not re.fullmatch(r"(\*\.)?[a-z0-9._-]{1,253}", name):
+                return f"Not a valid name to skip: {line.strip()[:60]}. Use example.com or *.example.com."
+            if name not in tls_bypass:
+                tls_bypass.append(name)
+    if len(tls_bypass) > 500:
+        return "HTTPS inspection skips at most 500 names."
+    try:
+        tls_port = int(form.get("tls_socks_port") or 1080)
+    except ValueError:
+        return "The SOCKS port must be a number."
+    if not 1024 <= tls_port <= 65535 or tls_port in TLS_PORTS_TAKEN:
+        return "The SOCKS port goes from 1024 to 65535, and not 8088, 5636, 37008 or 8443."
+    if tls and not tls_devices:
+        return "HTTPS inspection needs at least one device."
     with lock:
         settings.update(mode=mode, severities=severities, ignore_sids=sids, dedupe_seconds=dedupe, retention_days=retention,
                         block_timeout=timeout, block_ipv6=bool(form.get("block_ipv6")), telegram_proxy=proxy_value, router_host=host, router_user=user, router_password=password, router_port=port,
@@ -384,10 +466,11 @@ def save_settings(form):
                         ai_model=ai_model, ai_key=form.get("ai_key", "") or settings["ai_key"], ai_language=form.get("ai_language", "").strip()[:30] or "English")
         settings.update(oidc_enabled=oidc, oidc_issuer=oidc_issuer, oidc_client_id=oidc_client, oidc_client_secret=oidc_secret, oidc_group=oidc_group,
                         oidc_label=form.get("oidc_label", "").strip()[:30] or "SSO", oidc_scopes=form.get("oidc_scopes", "").strip() or "openid profile email")
+        settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices, tls_bypass=tls_bypass)
         if new_password:
             settings["password_hash"] = hash_password(new_password)
         write_json(SETTINGS_FILE, settings)
-    return None
+    return write_tls_control()
 
 
 def ignore_sid(sid):
