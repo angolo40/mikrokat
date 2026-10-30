@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"os"
@@ -53,8 +54,27 @@ func LoadCA(privateDir, stateDir string, generation int) (*CA, error) {
 	genPath := filepath.Join(privateDir, "generation")
 	pemPath := filepath.Join(stateDir, "ca.pem")
 
-	if key, cert, ok := readCA(keyPath, genPath, pemPath, generation); ok {
+	key, cert, why := readCA(keyPath, genPath, pemPath, generation)
+	if why == nil {
+		// A restored or copied key may be wider than 600; tighten it rather
+		// than replace a CA that devices already trust.
+		st, err := os.Stat(keyPath)
+		if err != nil {
+			return nil, err
+		}
+		if m := st.Mode().Perm(); m != 0o600 {
+			if err := os.Chmod(keyPath, 0o600); err != nil {
+				return nil, err
+			}
+			log.Printf("ca.key mode was %04o, tightened to 600", m)
+		}
 		return newCA(key, cert), nil
+	}
+	for _, p := range []string{keyPath, genPath, pemPath} {
+		if _, err := os.Lstat(p); err == nil {
+			log.Printf("replacing CA: %v", why)
+			break
+		}
 	}
 
 	for _, p := range []string{keyPath, genPath, pemPath} {
@@ -86,7 +106,7 @@ func LoadCA(privateDir, stateDir string, generation int) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	cert, err := x509.ParseCertificate(der)
+	cert, err = x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}
@@ -114,46 +134,54 @@ func newCA(key *ecdsa.PrivateKey, cert *x509.Certificate) *CA {
 
 // readCA returns the stored pair when all three files are readable, agree
 // with each other and with generation, and the certificate is still valid.
-func readCA(keyPath, genPath, pemPath string, generation int) (*ecdsa.PrivateKey, *x509.Certificate, bool) {
+// Otherwise the error says why the pair cannot be used.
+func readCA(keyPath, genPath, pemPath string, generation int) (*ecdsa.PrivateKey, *x509.Certificate, error) {
 	gen, err := os.ReadFile(genPath)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("generation file: %w", err)
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(string(gen))); err != nil || n != generation {
-		return nil, nil, false
+	n, err := strconv.Atoi(strings.TrimSpace(string(gen)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("generation file is not a number: %w", err)
+	}
+	if n != generation {
+		return nil, nil, fmt.Errorf("generation changed from %d to %d", n, generation)
 	}
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("ca.key: %w", err)
 	}
 	kb, _ := pem.Decode(keyPEM)
 	if kb == nil {
-		return nil, nil, false
+		return nil, nil, errors.New("ca.key has no PEM block")
 	}
 	key, err := x509.ParseECPrivateKey(kb.Bytes)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("ca.key: %w", err)
 	}
 	certPEM, err := os.ReadFile(pemPath)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("ca.pem: %w", err)
 	}
 	cb, _ := pem.Decode(certPEM)
 	if cb == nil {
-		return nil, nil, false
+		return nil, nil, errors.New("ca.pem has no PEM block")
 	}
 	cert, err := x509.ParseCertificate(cb.Bytes)
-	if err != nil || !cert.IsCA {
-		return nil, nil, false
+	if err != nil {
+		return nil, nil, fmt.Errorf("ca.pem: %w", err)
+	}
+	if !cert.IsCA {
+		return nil, nil, errors.New("ca.pem is not a CA certificate")
 	}
 	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok || !pub.Equal(&key.PublicKey) {
-		return nil, nil, false
+		return nil, nil, errors.New("ca.pem does not match ca.key")
 	}
 	if time.Now().After(cert.NotAfter) {
-		return nil, nil, false
+		return nil, nil, errors.New("CA certificate has expired")
 	}
-	return key, cert, true
+	return key, cert, nil
 }
 
 // Leaf returns a certificate for name signed by the CA, from memory when one
@@ -161,6 +189,9 @@ func readCA(keyPath, genPath, pemPath string, generation int) (*ecdsa.PrivateKey
 func (c *CA) Leaf(name string) (*tls.Certificate, error) {
 	if name == "" || len(name) > maxNameLength {
 		return nil, fmt.Errorf("invalid server name length %d", len(name))
+	}
+	if time.Now().After(c.cert.NotAfter) {
+		return nil, errors.New("CA certificate has expired")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -176,11 +207,15 @@ func (c *CA) Leaf(name string) (*tls.Certificate, error) {
 		return nil, err
 	}
 	now := time.Now()
+	notAfter := now.Add(leafValidity)
+	if notAfter.After(c.cert.NotAfter) {
+		notAfter = c.cert.NotAfter // never outlive the CA
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: name},
 		NotBefore:             now.Add(-time.Hour), // allow for clock skew
-		NotAfter:              now.Add(leafValidity),
+		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
