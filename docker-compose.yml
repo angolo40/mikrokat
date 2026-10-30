@@ -31,6 +31,8 @@ services:
     restart: unless-stopped
     logging: *logging
     network_mode: host
+    mem_limit: 256m
+    pids_limit: 128
     cap_drop:
       - ALL
     security_opt:

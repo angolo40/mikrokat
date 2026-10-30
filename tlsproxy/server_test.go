@@ -635,6 +635,74 @@ func TestClosedListenerAdmitsNothing(t *testing.T) {
 	}
 }
 
+// fill admits n connections from device, which end with the test.
+func (r *socksRig) fill(t *testing.T, device string, n int) {
+	t.Helper()
+	for i := range n {
+		_, done, ok := r.admit(r.ln, net.ParseIP(device))
+		if !ok {
+			t.Fatalf("connection %d of %s refused", i, device)
+		}
+		t.Cleanup(done)
+	}
+}
+
+func TestConnectionsPerDeviceCapped(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.cfg.Devices = []string{"127.0.0.1", "127.0.0.2"}
+	r.Apply(r.cfg)
+	r.fill(t, "127.0.0.1", maxPerDevice)
+
+	c := r.open(t, "127.0.0.1")
+	c.Write([]byte{5, 1, 0})
+	if n := ended(t, c); n != 0 {
+		t.Fatalf("%d bytes sent over the cap", n)
+	}
+	if n := statsRefused(r.Engine.Stats); n != 1 {
+		t.Fatalf("refused = %d", n)
+	}
+	if n := r.dials.Load(); n != 0 {
+		t.Fatalf("%d dials", n)
+	}
+	r.relayed(t, "127.0.0.2") // another device is not affected
+}
+
+func TestConnectionCapReleased(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Apply(r.cfg)
+	r.fill(t, "127.0.0.1", maxPerDevice-1)
+	c := r.relayed(t, "127.0.0.1")
+	if _, _, ok := r.admit(r.ln, net.ParseIP("127.0.0.1")); ok {
+		t.Fatal("admitted over the cap")
+	}
+	c.Close()
+	r.waitConns(t, maxPerDevice-1)
+	r.relayed(t, "127.0.0.1")
+}
+
+func TestConnectionsInTotalCapped(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	if maxConns%maxPerDevice != 0 {
+		t.Fatal("this test expects full devices to reach the total")
+	}
+	devices := maxConns / maxPerDevice
+	for i := range devices + 1 {
+		r.cfg.Devices = append(r.cfg.Devices, fmt.Sprintf("127.0.1.%d", i+1))
+	}
+	r.Apply(r.cfg)
+	for i := range devices {
+		r.fill(t, fmt.Sprintf("127.0.1.%d", i+1), maxPerDevice)
+	}
+	c := r.open(t, fmt.Sprintf("127.0.1.%d", devices+1)) // nothing yet from this one
+	c.Write([]byte{5, 1, 0})
+	if n := ended(t, c); n != 0 {
+		t.Fatalf("%d bytes sent over the cap", n)
+	}
+	if n := statsRefused(r.Engine.Stats); n != 1 {
+		t.Fatalf("refused = %d", n)
+	}
+}
+
 func TestLogsEachChangeOnce(t *testing.T) {
 	r := newSocksRig(t, echoServer(t, ""))
 	lines := func() int { return strings.Count(r.logs.String(), "\n") }

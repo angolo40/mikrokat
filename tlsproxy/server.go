@@ -16,6 +16,9 @@ import (
 const (
 	greetLimit = 5 * time.Second
 	dialLimit  = 10 * time.Second
+
+	maxConns     = 512
+	maxPerDevice = 128
 )
 
 // Forbidden reports whether ip is in a class no device may connect to. The
@@ -120,6 +123,7 @@ type Server struct {
 	port       int
 	caGen      int
 	conns      map[string]map[uint64]context.CancelFunc // by device, then by connection
+	total      int                                      // connections in conns
 	nextConn   uint64
 	state      string // the last line logged by Apply
 	listFailed bool   // the current failure to list interfaces is already logged
@@ -269,20 +273,23 @@ func (s *Server) accept(ln net.Listener) {
 // admit registers a connection from device and returns its context and the
 // function that ends it, or false if the connection must be closed. It holds
 // the lock of Apply, so a connection either meets the current configuration
-// here or is seen by the next Apply. It is never missed by both.
+// here or is seen by the next Apply. It is never missed by both. The caps keep
+// what one device, or a hostile site it visits, can cost the host.
 func (s *Server) admit(ln net.Listener, device net.IP) (context.Context, func(), bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ln != ln {
 		return nil, nil, false
 	}
-	if !s.cfg.Allowed(device) {
+	key := device.String()
+	if !s.cfg.Allowed(device) || s.total >= maxConns || len(s.conns[key]) >= maxPerDevice {
 		s.Engine.Stats.Refused()
 		return nil, nil, false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	key, id := device.String(), s.nextConn
+	id := s.nextConn
 	s.nextConn++
+	s.total++
 	if s.conns[key] == nil {
 		s.conns[key] = make(map[uint64]context.CancelFunc)
 	}
@@ -291,6 +298,7 @@ func (s *Server) admit(ln net.Listener, device net.IP) (context.Context, func(),
 		cancel()
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.total--
 		delete(s.conns[key], id)
 		if len(s.conns[key]) == 0 {
 			delete(s.conns, key)

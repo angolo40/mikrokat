@@ -16,6 +16,8 @@ import (
 const (
 	helloLimit     = 5 * time.Second
 	handshakeLimit = 10 * time.Second
+	idleLimit      = 10 * time.Minute
+	halfCloseLimit = 60 * time.Second
 )
 
 // Classify returns why a connection is relayed untouched, or "" to inspect it.
@@ -48,6 +50,9 @@ type Engine struct {
 	Roots      *x509.CertPool   // nil means the system pool
 	HelloLimit time.Duration    // zero means 5 seconds
 	Now        func() time.Time // nil means time.Now
+
+	IdleLimit      time.Duration // zero means 10 minutes
+	HalfCloseLimit time.Duration // zero means 60 seconds
 }
 
 func (e *Engine) now() time.Time {
@@ -78,7 +83,7 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	br := bufio.NewReaderSize(client, 16*1024+5)
 	passThrough := func(reason string, up net.Conn) {
 		e.Stats.Relayed(reason)
-		relay(conns, client, up, br, up)
+		e.relay(conns, client, up, br, up)
 	}
 	if d.Port != 443 {
 		passThrough("not_443", upstream)
@@ -148,7 +153,7 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	e.Stats.Inspected()
 	s := e.Emitter.Open(device, d.IP, remotePort(client))
 	defer s.Close()
-	relay(conns, toClient, toServer,
+	e.relay(conns, toClient, toServer,
 		io.TeeReader(toClient, copyTo(s.Client)),
 		io.TeeReader(toServer, copyTo(s.Server)))
 }
@@ -220,21 +225,58 @@ type closeWriter interface {
 
 // relay copies both ways, one goroutine per direction, until both have ended.
 // Bytes are read from fromClient and fromUpstream and written to the other
-// side, which is what gets half-closed.
-func relay(conns *connSet, client, upstream net.Conn, fromClient, fromUpstream io.Reader) {
+// side, which is what gets half-closed. A hostile peer can hold a connection
+// open for ever, so a relay with no bytes either way for IdleLimit is closed,
+// and so is one still running HalfCloseLimit after the first half-close.
+func (e *Engine) relay(conns *connSet, client, upstream net.Conn, fromClient, fromUpstream io.Reader) {
+	idle := e.IdleLimit
+	if idle == 0 {
+		idle = idleLimit
+	}
+	half := e.HalfCloseLimit
+	if half == 0 {
+		half = halfCloseLimit
+	}
+	quiet := time.AfterFunc(idle, conns.close)
+	defer quiet.Stop()
+
+	var once sync.Once
+	var cut *time.Timer // set once, and read after both pipes have ended
+	halfClosed := func() {
+		once.Do(func() { cut = time.AfterFunc(half, conns.close) })
+	}
 	var wg sync.WaitGroup
-	wg.Go(func() { pipe(conns, upstream, fromClient) })
-	wg.Go(func() { pipe(conns, client, fromUpstream) })
+	wg.Go(func() { pipe(conns, upstream, activeReader{fromClient, quiet, idle}, halfClosed) })
+	wg.Go(func() { pipe(conns, client, activeReader{fromUpstream, quiet, idle}, halfClosed) })
 	wg.Wait()
+	if cut != nil {
+		cut.Stop()
+	}
+}
+
+// activeReader puts off the idle limit each time bytes arrive.
+type activeReader struct {
+	r     io.Reader
+	quiet *time.Timer
+	idle  time.Duration
+}
+
+func (a activeReader) Read(p []byte) (int, error) {
+	n, err := a.r.Read(p)
+	if n > 0 {
+		a.quiet.Reset(a.idle)
+	}
+	return n, err
 }
 
 // pipe copies one direction. A clean end is passed on as a half-close, so the
 // other direction keeps running. Any other end closes everything: a reset, or
 // a TLS stream cut without close_notify, which must not reach the other side
 // as a clean end.
-func pipe(conns *connSet, dst net.Conn, src io.Reader) {
+func pipe(conns *connSet, dst net.Conn, src io.Reader, halfClosed func()) {
 	if _, err := io.Copy(dst, src); err == nil {
 		if cw, ok := dst.(closeWriter); ok && cw.CloseWrite() == nil {
+			halfClosed()
 			return
 		}
 	}

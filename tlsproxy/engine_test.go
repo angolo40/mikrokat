@@ -807,6 +807,164 @@ func TestHalfCloseRelayed(t *testing.T) {
 	})
 }
 
+// heldServer accepts connections and keeps them open and silent until the test
+// ends, whatever the peer does. It reads nothing, like the hostile server this
+// limit is for.
+func heldServer(t *testing.T) string {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	return tcpServer(t, func(*net.TCPConn) { <-release })
+}
+
+func TestIdleLimit(t *testing.T) {
+	t.Run("relay", func(t *testing.T) {
+		r := newRig(t, echoServer(t, ""))
+		r.IdleLimit = 100 * time.Millisecond
+		raw, done := r.connect(t.Context(), t, Dest{IP: testDest.IP, Port: 25})
+		roundTrip(t, raw)
+		ended(t, raw)
+		waitFor(t, done)
+	})
+	t.Run("inspected", func(t *testing.T) {
+		addr, roots := tlsEnd(t, func(s *tls.Conn) { io.Copy(s, s) })
+		r := newRig(t, addr)
+		r.Roots = roots
+		r.IdleLimit = 100 * time.Millisecond
+		raw, done := r.connect(t.Context(), t, testDest)
+		c := tls.Client(raw, r.clientConfig())
+		roundTrip(t, c)
+		ended(t, raw)
+		waitFor(t, done)
+		if n := statsInspected(r.Stats); n != 1 {
+			t.Fatalf("inspected %d", n)
+		}
+	})
+}
+
+func TestDefaultLimits(t *testing.T) {
+	if idleLimit != 10*time.Minute || halfCloseLimit != 60*time.Second {
+		t.Fatalf("idle %v, half-close %v", idleLimit, halfCloseLimit)
+	}
+}
+
+// Bytes in either direction count as activity, so a long download with a silent
+// client stays open.
+func TestTrafficPutsOffIdleLimit(t *testing.T) {
+	const limit, tick = 500 * time.Millisecond, 50 * time.Millisecond
+	drip := func(c net.Conn) {
+		for range 30 {
+			if _, err := c.Write([]byte("x")); err != nil {
+				return
+			}
+			time.Sleep(tick)
+		}
+	}
+	for name, tc := range map[string]struct {
+		server func(c *net.TCPConn)
+		client func(c net.Conn)
+	}{
+		"from the server": {
+			server: func(c *net.TCPConn) { drip(c) },
+			client: func(c net.Conn) {},
+		},
+		"from the client": {
+			server: func(c *net.TCPConn) { io.Copy(io.Discard, c) },
+			client: drip,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t, tcpServer(t, tc.server))
+			r.IdleLimit = limit
+			raw, done := r.connect(t.Context(), t, Dest{IP: testDest.IP, Port: 25})
+			go tc.client(raw)
+			select {
+			case <-done:
+				t.Fatal("closed with traffic flowing")
+			case <-time.After(3 * limit):
+			}
+		})
+	}
+}
+
+func TestHalfCloseLimit(t *testing.T) {
+	const limit = 200 * time.Millisecond
+	// closesAfterLimit checks that Handle keeps the connection for the limit,
+	// then closes it although nobody else ever ends it.
+	closesAfterLimit := func(t *testing.T, done <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-done:
+			t.Fatal("closed before the limit")
+		case <-time.After(limit / 2):
+		}
+		waitFor(t, done)
+	}
+
+	t.Run("client ends a relay", func(t *testing.T) {
+		r := newRig(t, heldServer(t))
+		r.HalfCloseLimit = limit
+		raw, done := r.connect(t.Context(), t, Dest{IP: testDest.IP, Port: 25})
+		if err := raw.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		closesAfterLimit(t, done)
+	})
+
+	t.Run("server ends a relay", func(t *testing.T) {
+		r := newRig(t, tcpServer(t, func(c *net.TCPConn) {
+			c.CloseWrite()
+			time.Sleep(ioWait)
+		}))
+		r.HalfCloseLimit = limit
+		raw, done := r.connect(t.Context(), t, Dest{IP: testDest.IP, Port: 25})
+		if n, err := raw.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+			t.Fatalf("read %d bytes, err %v", n, err)
+		}
+		closesAfterLimit(t, done)
+	})
+
+	t.Run("client ends an inspected connection", func(t *testing.T) {
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		addr, roots := tlsEnd(t, func(s *tls.Conn) { <-release })
+		r := newRig(t, addr)
+		r.Roots = roots
+		r.HalfCloseLimit = limit
+		raw, done := r.connect(t.Context(), t, testDest)
+		c := tls.Client(raw, r.clientConfig())
+		if err := c.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		closesAfterLimit(t, done)
+		if n := statsInspected(r.Stats); n != 1 {
+			t.Fatalf("inspected %d", n)
+		}
+	})
+
+	t.Run("traffic does not put it off", func(t *testing.T) {
+		r := newRig(t, tcpServer(t, func(c *net.TCPConn) {
+			for {
+				if _, err := c.Write([]byte("x")); err != nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}))
+		r.HalfCloseLimit = limit
+		raw, done := r.connect(t.Context(), t, Dest{IP: testDest.IP, Port: 25})
+		if err := raw.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		go io.Copy(io.Discard, raw)
+		closesAfterLimit(t, done)
+	})
+}
+
 // eofConn records that a read hit the end of the TCP stream. A TLS client gets
 // there only if no close_notify came first, which its own Read does not show.
 type eofConn struct {
