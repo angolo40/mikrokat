@@ -103,6 +103,12 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 		NextProtos: []string{"http/1.1"},
 		RootCAs:    e.Roots,
 		MinVersion: tls.VersionTLS12,
+		// Only the client can answer this, so it fails the handshake and the
+		// original connection is relayed. An empty answer would make the
+		// client anonymous, or break the site after inspection has begun.
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return nil, errors.New("server asked for a client certificate")
+		},
 	})
 	if err := handshake(ctx, toServer); err != nil {
 		upstream.Close()

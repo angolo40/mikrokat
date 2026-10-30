@@ -217,6 +217,12 @@ func echoServer(t *testing.T, banner string) string {
 // CA of its own, and returns the address and that CA as a pool.
 func tlsEnd(t *testing.T, serve func(s *tls.Conn)) (string, *x509.CertPool) {
 	t.Helper()
+	return tlsEndWith(t, func(*tls.Config) {}, serve)
+}
+
+// tlsEndWith is tlsEnd with a say in the server's configuration.
+func tlsEndWith(t *testing.T, configure func(*tls.Config), serve func(s *tls.Conn)) (string, *x509.CertPool) {
+	t.Helper()
 	ca, err := LoadCA(t.TempDir(), t.TempDir(), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -225,8 +231,10 @@ func tlsEnd(t *testing.T, serve func(s *tls.Conn)) (string, *x509.CertPool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{*leaf}}
+	configure(cfg)
 	addr := tcpServer(t, func(c *net.TCPConn) {
-		s := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{*leaf}})
+		s := tls.Server(c, cfg)
 		defer s.Close()
 		if s.Handshake() == nil {
 			serve(s)
@@ -421,6 +429,76 @@ func TestBadUpstreamRelaysOriginal(t *testing.T) {
 				t.Fatalf("inspected %d", n)
 			}
 			r.sink.none(t)
+		})
+	}
+}
+
+func TestClientCertRequestRelays(t *testing.T) {
+	// Leaf certificates are for servers, so these servers do not verify the
+	// client's: they only show whether it arrived.
+	cases := []struct {
+		name    string
+		version uint16
+		auth    tls.ClientAuthType
+	}{
+		{"TLS 1.3 required", tls.VersionTLS13, tls.RequireAnyClientCert},
+		{"TLS 1.3 optional", tls.VersionTLS13, tls.RequestClientCert},
+		{"TLS 1.2 required", tls.VersionTLS12, tls.RequireAnyClientCert},
+		{"TLS 1.2 optional", tls.VersionTLS12, tls.RequestClientCert},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := make(chan *x509.Certificate, 2)
+			addr, roots := tlsEndWith(t, func(cfg *tls.Config) {
+				cfg.MaxVersion = tc.version
+				cfg.ClientAuth = tc.auth
+			}, func(s *tls.Conn) {
+				var peer *x509.Certificate
+				if certs := s.ConnectionState().PeerCertificates; len(certs) > 0 {
+					peer = certs[0]
+				}
+				seen <- peer
+				io.Copy(s, s)
+			})
+			r := newRig(t, addr)
+			r.Roots = roots
+			raw, _ := r.connect(t.Context(), t, testDest)
+
+			// An enrolled device: it trusts our CA as well as the server's,
+			// so only the relay can bring its certificate to the server.
+			own, err := r.CA.Load().Leaf("device.example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			trusted := roots.Clone()
+			trusted.AddCert(r.CA.Load().cert)
+			c := tls.Client(raw, &tls.Config{
+				ServerName:   testName,
+				RootCAs:      trusted,
+				Certificates: []tls.Certificate{*own},
+			})
+			if _, err := c.Write([]byte("ping")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.ReadFull(c, make([]byte, 4)); err != nil {
+				t.Errorf("reply: %v", err)
+			}
+
+			// serve reports before it echoes, so a reply means it has reported.
+			var peer *x509.Certificate
+			select {
+			case peer = <-seen:
+			default:
+			}
+			if peer == nil || !peer.Equal(own.Leaf) {
+				t.Errorf("the client's certificate did not reach the server")
+			}
+			if n := statsInspected(r.Stats); n != 0 {
+				t.Errorf("inspected %d", n)
+			}
+			if n := statsRelayed(r.Stats, "upstream"); n != 1 {
+				t.Errorf("relayed upstream %d", n)
+			}
 		})
 	}
 }
