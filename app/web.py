@@ -634,6 +634,7 @@ GUIDE = """<aside class="guide">
 <h2>7. Look inside HTTPS (optional)</h2>
 <p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac.</p>
 <p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
+<p>Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
 </aside>"""
 
 

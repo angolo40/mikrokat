@@ -65,7 +65,10 @@ def handle(event):
     if len(seen) > 10000:
         for k in [k for k, t in seen.items() if now - t >= settings["dedupe_seconds"]]:
             del seen[k]
-    if settings["mode"] == "block" and ":" in ip and not settings["block_ipv6"]:
+    if store.is_decrypted(event):
+        # A page can send a crafted URL to a shared CDN. A block on that alert would cut the CDN off for the whole network.
+        action = "Would block"
+    elif settings["mode"] == "block" and ":" in ip and not settings["block_ipv6"]:
         action = "Not blocked, IPv6 blocking is off:"
     elif settings["mode"] == "block":
         comment = f"[{alert.get('gid')}:{alert.get('signature_id')}] {alert.get('signature')} port {port}"

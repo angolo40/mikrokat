@@ -149,7 +149,7 @@ New Settings tab, HTTPS inspection, using the existing switch and reveal pattern
 - counters: inspected, relayed by reason, refused, handshake failures, copies dropped
 - English setup guide beside the form, including the consent note below
 
-Alerts from decrypted traffic get a `decrypted` badge on Live and on the host page. Blocks, allowlist and notifications need no change: they already work on the addresses in the event.
+Alerts from decrypted traffic get a `decrypted` badge on Live and on the host page. The allowlist and notifications need no change: they already work on the addresses in the event. Block never acts on these alerts, which are recorded as `Would block`: a page could otherwise send a crafted URL to a shared CDN and get it blocked for the whole network.
 
 ### Health
 
