@@ -9,6 +9,12 @@ import (
 
 var t0 = time.Unix(1_800_000_000, 0)
 
+// earnAuto adds an automatic entry the way a pinned app does.
+func earnAuto(b *Bypass, device, name string, now time.Time) {
+	b.Failed(device, name, now)
+	b.Failed(device, name, now)
+}
+
 func TestSuffixMatch(t *testing.T) {
 	b := NewBypass(nil)
 	b.SetOwn([]string{"bank.example"})
@@ -44,7 +50,7 @@ func TestOwnNormalised(t *testing.T) {
 
 func TestAutoExpires(t *testing.T) {
 	b := NewBypass(nil)
-	b.AddAuto("d", "pin.example", t0)
+	earnAuto(b, "d", "pin.example", t0)
 	if got := b.Match("d", "pin.example", t0); got != "auto_bypass" {
 		t.Errorf("at now: got %q", got)
 	}
@@ -55,7 +61,7 @@ func TestAutoExpires(t *testing.T) {
 
 func TestAutoIsPerDevice(t *testing.T) {
 	b := NewBypass(nil)
-	b.AddAuto("d1", "pin.example", t0)
+	earnAuto(b, "d1", "pin.example", t0)
 	if got := b.Match("d2", "pin.example", t0); got != "" {
 		t.Errorf("other device: got %q", got)
 	}
@@ -63,7 +69,7 @@ func TestAutoIsPerDevice(t *testing.T) {
 
 func TestBypassWinsOverAuto(t *testing.T) {
 	b := NewBypass([]string{"pin.example"})
-	b.AddAuto("d", "pin.example", t0)
+	earnAuto(b, "d", "pin.example", t0)
 	if got := b.Match("d", "pin.example", t0); got != "bypass" {
 		t.Errorf("got %q", got)
 	}
@@ -71,7 +77,7 @@ func TestBypassWinsOverAuto(t *testing.T) {
 
 func TestApplyRemoves(t *testing.T) {
 	b := NewBypass(nil)
-	b.AddAuto("d", "pin.example", t0)
+	earnAuto(b, "d", "pin.example", t0)
 	rm := []AutoRemoval{{Device: "d", Name: "pin.example", At: t0.Unix() - 10}}
 	b.Apply(rm)
 	if got := b.Match("d", "pin.example", t0); got != "auto_bypass" {
@@ -84,7 +90,7 @@ func TestApplyRemoves(t *testing.T) {
 		t.Errorf("removal after the entry: got %q", got)
 	}
 	// A later entry is not touched by the same removal.
-	b.AddAuto("d", "pin.example", t0.Add(time.Minute))
+	earnAuto(b, "d", "pin.example", t0.Add(time.Minute))
 	b.Apply(rm)
 	if got := b.Match("d", "pin.example", t0.Add(time.Minute)); got != "auto_bypass" {
 		t.Errorf("later entry: got %q", got)
@@ -93,8 +99,8 @@ func TestApplyRemoves(t *testing.T) {
 
 func TestAutoRenewAndList(t *testing.T) {
 	b := NewBypass(nil)
-	b.AddAuto("d", "a.example", t0)
-	b.AddAuto("d", "a.example", t0.Add(time.Hour))
+	earnAuto(b, "d", "a.example", t0)
+	earnAuto(b, "d", "a.example", t0.Add(time.Hour))
 	got := b.Auto(t0.Add(time.Hour))
 	want := []AutoEntry{{Device: "d", Name: "a.example", Until: t0.Add(25 * time.Hour).Unix()}}
 	if !reflect.DeepEqual(got, want) {
@@ -108,9 +114,9 @@ func TestAutoRenewAndList(t *testing.T) {
 func TestAutoCapEvictsEarliest(t *testing.T) {
 	b := NewBypass(nil)
 	for i := 0; i < maxAuto; i++ {
-		b.AddAuto("d", fmt.Sprintf("h%d.example", i), t0.Add(time.Duration(i)*time.Second))
+		earnAuto(b, "d", fmt.Sprintf("h%d.example", i), t0.Add(time.Duration(i)*time.Second))
 	}
-	b.AddAuto("d", "new.example", t0.Add(time.Hour))
+	earnAuto(b, "d", "new.example", t0.Add(time.Hour))
 	if n := len(b.Auto(t0.Add(time.Hour))); n != maxAuto {
 		t.Fatalf("len %d", n)
 	}
@@ -119,6 +125,124 @@ func TestAutoCapEvictsEarliest(t *testing.T) {
 	}
 	if got := b.Match("d", "new.example", t0.Add(time.Hour)); got != "auto_bypass" {
 		t.Errorf("new entry missing: %q", got)
+	}
+}
+
+func TestAutoIsExactName(t *testing.T) {
+	b := NewBypass(nil)
+	earnAuto(b, "d", "pin.example", t0)
+	for _, n := range []string{"www.pin.example", "a.b.pin.example"} {
+		if got := b.Match("d", n, t0); got != "" {
+			t.Errorf("%s: got %q", n, got)
+		}
+	}
+	if got := b.Match("d", "PIN.example.", t0); got != "auto_bypass" {
+		t.Errorf("same name in another form: got %q", got)
+	}
+	earnAuto(b, "d", "com", t0)
+	if got := b.Match("d", "other.com", t0); got != "" {
+		t.Errorf("other.com: got %q", got)
+	}
+}
+
+func TestAutoNeedsTwoFailures(t *testing.T) {
+	b := NewBypass(nil)
+	b.Failed("d", "pin.example", t0)
+	if got := b.Match("d", "pin.example", t0); got != "" {
+		t.Fatalf("after one failure: got %q", got)
+	}
+	second := t0.Add(failWindow - time.Second)
+	b.Failed("d", "pin.example", second)
+	if got := b.Match("d", "pin.example", second); got != "auto_bypass" {
+		t.Fatalf("after two failures: got %q", got)
+	}
+	want := []AutoEntry{{Device: "d", Name: "pin.example", Until: second.Add(autoTTL).Unix()}}
+	if got := b.Auto(second); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestFailuresTooFarApart(t *testing.T) {
+	b := NewBypass(nil)
+	b.Failed("d", "pin.example", t0)
+	late := t0.Add(failWindow + time.Second)
+	b.Failed("d", "pin.example", late)
+	if got := b.Match("d", "pin.example", late); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	// The late failure counts as a new first one.
+	b.Failed("d", "pin.example", late.Add(time.Minute))
+	if got := b.Match("d", "pin.example", late.Add(time.Minute)); got != "auto_bypass" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFailuresCountPerDeviceAndName(t *testing.T) {
+	b := NewBypass(nil)
+	b.Failed("d1", "a.example", t0)
+	b.Failed("d2", "a.example", t0)
+	b.Failed("d1", "b.example", t0)
+	if got := b.Auto(t0); len(got) != 0 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestCompletedHandshakeBlocksAuto(t *testing.T) {
+	b := NewBypass(nil)
+	b.Completed("d", "site.example", t0)
+	at := t0.Add(goodTTL - 10*time.Second)
+	b.Failed("d", "site.example", at)
+	b.Failed("d", "site.example", at.Add(time.Second))
+	if got := b.Match("d", "site.example", at); got != "" {
+		t.Fatalf("within a day: got %q", got)
+	}
+	// Only for this device and this name.
+	b.Failed("d2", "site.example", at)
+	b.Failed("d2", "site.example", at)
+	b.Failed("d", "www.site.example", at)
+	b.Failed("d", "www.site.example", at)
+	if n := len(b.Auto(at)); n != 2 {
+		t.Fatalf("%d entries", n)
+	}
+	// It is forgotten after a day.
+	at = t0.Add(goodTTL + time.Second)
+	b.Failed("d", "site.example", at)
+	b.Failed("d", "site.example", at)
+	if got := b.Match("d", "site.example", at); got != "auto_bypass" {
+		t.Fatalf("after a day: got %q", got)
+	}
+}
+
+func TestCompletedForgetsFailure(t *testing.T) {
+	b := NewBypass(nil)
+	b.Failed("d", "site.example", t0)
+	b.Completed("d", "site.example", t0)
+	if n := len(b.fails); n != 0 {
+		t.Fatalf("%d failures kept", n)
+	}
+}
+
+func TestMemoryIsCapped(t *testing.T) {
+	b := NewBypass(nil)
+	b.Completed("d", "oldest.example", t0)
+	b.Failed("d", "oldest-failure.example", t0)
+	later := t0.Add(time.Second)
+	for i := range maxMemory {
+		name := fmt.Sprintf("h%d.example", i)
+		b.Completed("d", name, later)
+		b.Failed("d", "fail-"+name, later)
+	}
+	if n, m := len(b.good), len(b.fails); n != maxMemory || m != maxMemory {
+		t.Fatalf("good %d, fails %d", n, m)
+	}
+	if _, ok := b.good[autoKey{"d", "oldest.example"}]; ok {
+		t.Error("the oldest good handshake was kept")
+	}
+	if _, ok := b.fails[autoKey{"d", "oldest-failure.example"}]; ok {
+		t.Error("the oldest failure was kept")
+	}
+	if _, ok := b.good[autoKey{"d", fmt.Sprintf("h%d.example", maxMemory-1)}]; !ok {
+		t.Error("the newest good handshake is missing")
 	}
 }
 

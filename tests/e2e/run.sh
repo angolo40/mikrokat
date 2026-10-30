@@ -275,12 +275,15 @@ checks() {
   # A name of its own: the automatic bypass would stop test.example.net from being inspected.
   check "Client without our CA"
   before=$(counter relayed.auto_bypass)
-  through_proxy pinned.example.net --cacert "$E2E_WORK/test-ca.pem" -o /dev/null https://pinned.example.net/ 2>/dev/null
-  code=$?
-  [ "$code" = 60 ] || fail "the first try returned $code, not a certificate failure"
-  sleep 1
+  local try
+  for try in first second; do
+    through_proxy pinned.example.net --cacert "$E2E_WORK/test-ca.pem" -o /dev/null https://pinned.example.net/ 2>/dev/null
+    code=$?
+    [ "$code" = 60 ] || fail "the $try try returned $code, not a certificate failure"
+    sleep 1
+  done
   body=$(through_proxy pinned.example.net --cacert "$E2E_WORK/test-ca.pem" https://pinned.example.net/ 2>&1)
-  [ "$body" = "mikrokat-e2e-ok" ] || fail "the second try was not relayed: $body"
+  [ "$body" = "mikrokat-e2e-ok" ] || fail "the third try was not relayed: $body"
   wait_for 15 counter_above relayed.auto_bypass "$before" || fail "relayed.auto_bypass did not grow"
   counter auto_bypass | grep -q '"device": "127.0.0.1", "name": "pinned.example.net"' || fail "auto_bypass does not list the name: $(counter auto_bypass)"
 

@@ -437,7 +437,7 @@ func TestPortInUseIsRetried(t *testing.T) {
 func TestAppliesBypass(t *testing.T) {
 	r := newSocksRig(t, echoServer(t, ""))
 	now := time.Now()
-	r.Engine.Bypass.AddAuto("10.0.0.9", "site.test", now)
+	earnAuto(r.Engine.Bypass, "10.0.0.9", "site.test", now)
 	r.Apply(Config{
 		Bypass:     []string{"bank.test"},
 		AutoRemove: []AutoRemoval{{Device: "10.0.0.9", Name: "site.test", At: now.Unix() + 1}},

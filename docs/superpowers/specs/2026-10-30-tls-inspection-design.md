@@ -107,7 +107,7 @@ The CA key stays in `data/tls/private`, mounted only in `tlsproxy`, mode 600. Th
 
 - **Built-in list:** suffixes for banks, health services and Windows and browser update services, stored as a file in the repository. It also holds the public names used by Encrypted Client Hello, such as `cloudflare-ech.com`: a real ECH extension cannot be told from the fake one browsers send, so the outer name is the only signal.
 - **Own list:** names the owner adds in Settings.
-- **Automatic:** when a client aborts the handshake with our certificate, that device and name are relayed untouched for 24 hours. This is how apps with pinned certificates keep working.
+- **Automatic:** when a client aborts the handshake with our certificate twice within 10 minutes, with an alert, a plain close or a reset, that device and exact name are relayed untouched for 24 hours. This is how apps with pinned certificates keep working. A device that completed a handshake with our certificate for that name in the last 24 hours earns no entry, and neither does a client the proxy itself refused for ALPN or TLS version: it never saw our certificate.
 
 ### Emitter
 
@@ -165,7 +165,7 @@ Alerts from decrypted traffic get a `decrypted` badge on Live and on the host pa
 | Host off | PAC goes direct | `check-gateway` drops the route |
 | Router unreachable when switching off | Not affected | Error shown, `REDIRECT` removed, traffic still flows through the host |
 | Real server has a bad certificate | Relayed, client warns | Same |
-| Client rejects our certificate | Automatic bypass on the next try | Same |
+| Client rejects our certificate | Automatic bypass after the second try within 10 minutes | Same |
 | Emitter queue full | Copy dropped and counted | Same |
 
 ## Delivery

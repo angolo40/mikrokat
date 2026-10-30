@@ -576,25 +576,33 @@ func TestClientRejectsOurCert(t *testing.T) {
 	r.Roots = poolOf(srv.Certificate())
 	r.Now = func() time.Time { return t0 }
 	device := testDevice.String()
-	raw, done := r.connect(t.Context(), t, testDest)
-
 	// This client trusts the real server and not our CA, like a pinned app.
 	pinned := &tls.Config{ServerName: testName, RootCAs: poolOf(srv.Certificate())}
-	if err := tls.Client(raw, pinned).Handshake(); err == nil {
-		t.Fatal("client accepted our certificate")
+
+	refuse := func() {
+		t.Helper()
+		raw, done := r.connect(t.Context(), t, testDest)
+		if err := tls.Client(raw, pinned).Handshake(); err == nil {
+			t.Fatal("client accepted our certificate")
+		}
+		waitFor(t, done)
 	}
-	waitFor(t, done)
+	refuse()
+	if got := r.Bypass.Match(device, testName, t0); got != "" {
+		t.Fatalf("match %q after one refusal", got)
+	}
+	refuse()
 	if got := r.Bypass.Match(device, testName, t0); got != "auto_bypass" {
 		t.Fatalf("match %q", got)
 	}
 	if got := r.Bypass.Match(device, testName, t0.Add(autoTTL)); got != "" {
 		t.Fatalf("entry not dated from Now: match %q", got)
 	}
-	if n := statsHandshakes(r.Stats); n != 1 {
+	if n := statsHandshakes(r.Stats); n != 2 {
 		t.Fatalf("handshake failures %d", n)
 	}
 
-	raw, _ = r.connect(t.Context(), t, testDest)
+	raw, _ := r.connect(t.Context(), t, testDest)
 	c := tls.Client(raw, pinned)
 	if reply := get(t, c, "/x"); !strings.Contains(reply, "reply to /x") {
 		t.Fatalf("reply %q", reply)
@@ -607,7 +615,7 @@ func TestClientRejectsOurCert(t *testing.T) {
 	}
 }
 
-func TestPlainCloseAddsAuto(t *testing.T) {
+func TestPlainCloseCounts(t *testing.T) {
 	cases := []struct {
 		name  string
 		close func(c *net.TCPConn) error
@@ -620,21 +628,79 @@ func TestPlainCloseAddsAuto(t *testing.T) {
 			srv := tlsServer(t)
 			r := newRig(t, srv.Listener.Addr().String())
 			r.Roots = poolOf(srv.Certificate())
-			raw, done := r.connect(t.Context(), t, testDest)
-
-			if _, err := raw.Write(captureHello(t, testName)); err != nil {
-				t.Fatal(err)
+			for range 2 {
+				raw, done := r.connect(t.Context(), t, testDest)
+				if _, err := raw.Write(captureHello(t, testName)); err != nil {
+					t.Fatal(err)
+				}
+				readN(t, raw, 1) // the proxy answered: the client handshake is running
+				if err := tc.close(raw); err != nil {
+					t.Fatal(err)
+				}
+				waitFor(t, done)
 			}
-			readN(t, raw, 1) // the proxy answered: the client handshake is running
-			if err := tc.close(raw); err != nil {
-				t.Fatal(err)
-			}
-			waitFor(t, done)
 			if got := r.Bypass.Match(testDevice.String(), testName, time.Now()); got != "auto_bypass" {
 				t.Fatalf("match %q", got)
 			}
-			if n := statsHandshakes(r.Stats); n != 1 {
+			if n := statsHandshakes(r.Stats); n != 2 {
 				t.Fatalf("handshake failures %d", n)
+			}
+		})
+	}
+}
+
+// A client that finished a handshake with our certificate is not pinned, so
+// later aborts of that device and name are only cancelled requests.
+func TestGoodHandshakeProtectsName(t *testing.T) {
+	srv := tlsServer(t)
+	r := newRig(t, srv.Listener.Addr().String())
+	r.Roots = poolOf(srv.Certificate())
+	raw, done := r.connect(t.Context(), t, testDest)
+	if err := tls.Client(raw, r.clientConfig()).Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	waitFor(t, done)
+
+	for range 2 {
+		raw, done := r.connect(t.Context(), t, testDest)
+		if err := tls.Client(raw, &tls.Config{ServerName: testName, RootCAs: x509.NewCertPool()}).Handshake(); err == nil {
+			t.Fatal("client accepted our certificate")
+		}
+		waitFor(t, done)
+	}
+	if got := r.Bypass.Auto(time.Now()); len(got) != 0 {
+		t.Fatalf("automatic entries %v", got)
+	}
+}
+
+func TestProxyRefusalAddsNoAuto(t *testing.T) {
+	cases := []struct {
+		name   string
+		client *tls.Config
+	}{
+		{"ALPN", &tls.Config{NextProtos: []string{"h2"}}},
+		{"TLS version", &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tlsServer(t)
+			r := newRig(t, srv.Listener.Addr().String())
+			r.Roots = poolOf(srv.Certificate())
+			for range 2 {
+				cfg := tc.client.Clone()
+				cfg.ServerName, cfg.InsecureSkipVerify = testName, true
+				raw, done := r.connect(t.Context(), t, testDest)
+				if err := tls.Client(raw, cfg).Handshake(); err == nil {
+					t.Fatal("the proxy accepted this client")
+				}
+				waitFor(t, done)
+			}
+			if n := statsHandshakes(r.Stats); n != 2 {
+				t.Fatalf("handshake failures %d", n)
+			}
+			if got := r.Bypass.Auto(time.Now()); len(got) != 0 {
+				t.Fatalf("automatic entries %v", got)
 			}
 		})
 	}

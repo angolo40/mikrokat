@@ -683,7 +683,7 @@ def https_card(host, switch, field):
         counters = '<p class="hint">No numbers from the proxy yet.</p>'
     return (f'<section class="card"><h2>HTTPS inspection</h2><p>Lets Suricata see inside the HTTPS of chosen devices, through a proxy that rebuilds the traffic as plain HTTP for it. Off by default.</p>'
             f'{warning}{options}</div></section>'
-            f'<section class="card"><h2>Skipped automatically</h2><p>When a site refuses the Mikrokat certificate, the proxy lets it through untouched for 24 hours.</p>{auto}</section>'
+            f'<section class="card"><h2>Skipped automatically</h2><p>When a device refuses the Mikrokat certificate for a name twice within 10 minutes, the proxy lets that device and name through untouched for 24 hours.</p>{auto}</section>'
             f'<section class="card"><h2>Numbers</h2>{counters}</section>')
 
 

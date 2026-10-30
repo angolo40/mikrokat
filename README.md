@@ -175,7 +175,7 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 
 - Devices that are not on your list, and programs on a listed device that do not use the proxy.
 - Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one.
-- Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After the first refusal, that device and name are relayed untouched for 24 hours.
+- Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
 - Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
 - Ports other than 443, private addresses, and IPv6 addresses.
@@ -203,7 +203,7 @@ To check it, open a site in that profile and look at its certificate: the issuer
 - **URLs stay in the logs.** Suricata stores the host, URL and user agent of inspected requests for as long as EVE and EveBox keep them: 7 days by default, as set by **Keep logs for** on the Data tab, up to 4 GB. URLs can hold tokens. Passwords, cookies and bodies are not written to disk, and `tests/e2e/run.sh` checks that.
 - **The CA key can impersonate any site** to every device that trusts it. It stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. If it may have leaked, use **Regenerate the CA** and import the new certificate.
 - **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** on the Numbers card shows it.
-- **HTTP/1.1 only.** The proxy offers no HTTP/2, so sites answer over HTTP/1.1.
+- **HTTP/1.1 only.** The proxy offers no HTTP/2, so sites answer over HTTP/1.1. A program that speaks only HTTP/2 is refused, and the automatic bypass does not apply to it, because the program never rejected the certificate. Add its names to the bypass list. The same goes for a program that only speaks a TLS version older than 1.2.
 - **A client certificate requested late fails.** A TLS 1.2 site that asks for one after the connection is up is refused by the proxy, and the page fails. Add its name to the bypass list.
 
 ## Sending alerts to a SIEM

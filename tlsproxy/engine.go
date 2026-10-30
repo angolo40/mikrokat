@@ -132,9 +132,11 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	}
 
 	var leafErr error
+	offered := false
 	toClient := tls.Server(&bufferedConn{Conn: client, r: br}, &tls.Config{
 		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			offered = true
 			var cert *tls.Certificate
 			cert, leafErr = e.CA.Load().Leaf(h.Name)
 			return cert, leafErr
@@ -144,11 +146,14 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 		e.Stats.HandshakeFailed()
 		var ne net.Error
 		timedOut := errors.As(err, &ne) && ne.Timeout()
-		if leafErr == nil && !timedOut && ctx.Err() == nil {
-			e.Bypass.AddAuto(device.String(), h.Name, e.now())
+		// A TLS version or ALPN the proxy refuses ends the handshake before any
+		// certificate is chosen, so that client has not rejected ours.
+		if offered && leafErr == nil && !timedOut && ctx.Err() == nil {
+			e.Bypass.Failed(device.String(), h.Name, e.now())
 		}
 		return
 	}
+	e.Bypass.Completed(device.String(), h.Name, e.now())
 
 	e.Stats.Inspected()
 	s := e.Emitter.Open(device, d.IP, remotePort(client))
