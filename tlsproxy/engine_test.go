@@ -55,9 +55,10 @@ func (c *trackedConn) Close() error {
 // the test fails if one is left open.
 type rig struct {
 	*Engine
-	sink  *sink
-	open  atomic.Int64
-	ready chan bool
+	sink   *sink
+	open   atomic.Int64
+	ready  chan bool
+	device net.IP
 }
 
 func newRig(t *testing.T, addr string) *rig {
@@ -69,7 +70,7 @@ func newRig(t *testing.T, addr string) *rig {
 	}
 	ptr := new(atomic.Pointer[CA])
 	ptr.Store(ca)
-	r := &rig{sink: sk, ready: make(chan bool, 8)}
+	r := &rig{sink: sk, ready: make(chan bool, 8), device: testDevice}
 	r.Engine = &Engine{CA: ptr, Bypass: NewBypass(nil), Emitter: em, Stats: st}
 	r.Dial = func(ctx context.Context, _ Dest) (net.Conn, error) { return r.dial(ctx, addr) }
 	t.Cleanup(func() {
@@ -118,7 +119,7 @@ func (r *rig) connect(ctx context.Context, t *testing.T, d Dest) (*net.TCPConn, 
 	tracked := r.track(s)
 	go func() {
 		defer close(done)
-		r.Handle(ctx, tracked, testDevice, d, func(ok bool) {
+		r.Handle(ctx, tracked, r.device, d, func(ok bool) {
 			readies.Add(1)
 			r.ready <- ok
 		})
@@ -567,6 +568,44 @@ func TestRelayReasons(t *testing.T) {
 				t.Fatalf("relayed %s %d", tc.reason, n)
 			}
 		})
+	}
+}
+
+// The emitter rebuilds IPv4 only, so a device on IPv6 would be counted as
+// inspected with no copy made.
+func TestIPv6DeviceRelays(t *testing.T) {
+	srv := tlsServer(t)
+	r := newRig(t, srv.Listener.Addr().String())
+	r.Roots = poolOf(srv.Certificate()) // would be inspected if not relayed
+	r.device = net.ParseIP("2001:db8::9")
+	raw, _ := r.connect(t.Context(), t, testDest)
+
+	c := tls.Client(raw, &tls.Config{ServerName: testName, InsecureSkipVerify: true})
+	if reply := get(t, c, "/x"); !strings.Contains(reply, "reply to /x") {
+		t.Fatalf("reply %q", reply)
+	}
+	if !c.ConnectionState().PeerCertificates[0].Equal(srv.Certificate()) {
+		t.Fatal("client did not see the server's own certificate")
+	}
+	if n := statsRelayed(r.Stats, "ipv6"); n != 1 {
+		t.Fatalf("relayed ipv6 %d", n)
+	}
+	if n := statsInspected(r.Stats); n != 0 {
+		t.Fatalf("inspected %d", n)
+	}
+}
+
+func TestMappedIPv4DeviceInspected(t *testing.T) {
+	srv := tlsServer(t)
+	r := newRig(t, srv.Listener.Addr().String())
+	r.Roots = poolOf(srv.Certificate())
+	r.device = net.ParseIP("::ffff:10.0.0.9")
+	raw, _ := r.connect(t.Context(), t, testDest)
+	if reply := get(t, tls.Client(raw, r.clientConfig()), "/x"); !strings.Contains(reply, "reply to /x") {
+		t.Fatalf("reply %q", reply)
+	}
+	if n := statsInspected(r.Stats); n != 1 {
+		t.Fatalf("inspected %d", n)
 	}
 }
 

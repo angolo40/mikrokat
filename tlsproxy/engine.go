@@ -98,7 +98,11 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	if ctx.Err() != nil {
 		return
 	}
-	if reason := Classify(d, h, e.Bypass.Match(device.String(), h.Name, e.now())); reason != "" {
+	reason := Classify(d, h, e.Bypass.Match(device.String(), h.Name, e.now()))
+	if reason == "" && device.To4() == nil {
+		reason = "ipv6" // the emitter rebuilds IPv4 only, so no copy could be made
+	}
+	if reason != "" {
 		passThrough(reason, upstream)
 		return
 	}

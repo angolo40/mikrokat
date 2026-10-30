@@ -64,7 +64,7 @@ Each connection follows the same steps, whichever entry it came from:
 3. If the port is 443, read the TLS ClientHello without consuming it, with a 5 second limit. Other ports skip this step, because protocols such as SMTP wait for the server to speak first.
 4. Relay it untouched, counting the reason, if any of these is true:
    - the port is not 443, or the bytes are not TLS
-   - the destination is IPv6, or private, which only the transparent entry can bring here
+   - the device or the destination is IPv6, or the destination is private, which only the transparent entry can bring here
    - there is no server name
    - the name matches the bypass list or the automatic bypass
    - a leaf cannot be signed, because the CA has expired. The reason is `ca_expired`, and it adds no automatic entry
