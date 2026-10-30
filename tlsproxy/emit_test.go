@@ -240,6 +240,40 @@ func TestQueueFullDrops(t *testing.T) {
 	}
 }
 
+func TestRunPaces(t *testing.T) {
+	sk := newSink(t)
+	e, err := NewEmitter(sk.addr(), 4<<20, NewStats())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Queued before Run starts, so only the pacing can hold it back.
+	frame := make([]byte, 1400)
+	const total = 64 * paceBytes
+	for queued := 0; queued < total; queued += len(frame) {
+		if !e.enqueue(frame) {
+			t.Fatal("queue full")
+		}
+	}
+	start := time.Now()
+	go e.Run()
+	deadline := start.Add(10 * time.Second)
+	for {
+		e.mu.Lock()
+		left := len(e.queue)
+		e.mu.Unlock()
+		if left == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d frames still queued", left)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if took, want := time.Since(start), (total/paceBytes-1)*pacePause; took < want {
+		t.Fatalf("sent %d bytes in %v, want at least %v", total, took, want)
+	}
+}
+
 func TestSendErrorsDoNotStop(t *testing.T) {
 	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

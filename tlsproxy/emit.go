@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
+	"time"
 )
 
 // DecryptedVLAN tags rebuilt traffic so Suricata rules can tell it apart
@@ -15,6 +16,14 @@ const DecryptedVLAN = 3900
 const (
 	maxSegment = 1460
 	copyCap    = 1 << 20 // bytes copied per direction per connection
+
+	// Run sends this much, then pauses. UDP has no backpressure: what tzsp
+	// cannot read in time is dropped by the kernel, nothing counts it, and
+	// Suricata cannot use a stream with a gap. On the 4-core test host 64 KiB
+	// lost frames with every core busy and 32 KiB did not. It works out at
+	// about 20 MB/s.
+	paceBytes = 32 << 10
+	pacePause = time.Millisecond
 
 	flagFIN = 0x01
 	flagSYN = 0x02
@@ -125,9 +134,10 @@ func (e *Emitter) enqueue(frame []byte) bool {
 	return true
 }
 
-// Run sends queued frames until the process exits. A send error counts as a
-// drop and the loop goes on.
+// Run sends queued frames until the process exits, at a pace tzsp can follow.
+// A send error counts as a drop and the loop goes on.
 func (e *Emitter) Run() {
+	sent := 0
 	for {
 		e.mu.Lock()
 		if len(e.queue) == 0 {
@@ -142,6 +152,10 @@ func (e *Emitter) Run() {
 		e.mu.Unlock()
 		if _, err := e.conn.Write(pkt); err != nil {
 			e.stats.CopyDropped()
+		}
+		if sent += len(pkt); sent >= paceBytes {
+			sent = 0
+			time.Sleep(pacePause)
 		}
 	}
 }
