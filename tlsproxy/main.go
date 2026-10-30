@@ -39,11 +39,8 @@ func main() {
 		Dial:    Dial,
 	}, privateDir, stateDir)
 
-	var cfg Config
-	readControl := func() {
-		cfg = LoadConfig(controlPath, cfg)
-		server.Apply(cfg)
-	}
+	reader := controlReader{path: controlPath}
+	readControl := func() { server.Apply(reader.read()) }
 	writeStats := func() {
 		if err := stats.WriteFile(statsPath, bypass.Auto(time.Now())); err != nil {
 			log.Printf("stats: %v", err)

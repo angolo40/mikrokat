@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net"
 	"os"
 )
@@ -24,21 +25,40 @@ type Config struct {
 	AutoRemove   []AutoRemoval `json:"auto_remove"`
 }
 
-// LoadConfig reads the control file. A missing file means the feature is off;
-// a file that cannot be read or parsed keeps the last good configuration.
-func LoadConfig(path string, last Config) Config {
+// LoadConfig reads the control file. A missing file means the feature is off.
+// A file that cannot be read or parsed keeps the last good configuration, which
+// is returned with the error.
+func LoadConfig(path string, last Config) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Config{}
+			return Config{}, nil
 		}
-		return last
+		return last, err
 	}
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return last
+		return last, err
 	}
-	return c
+	return c, nil
+}
+
+// controlReader polls the control file. It logs a failure once, and a failure
+// after a good read counts as a new one.
+type controlReader struct {
+	path   string
+	cfg    Config
+	failed bool // the current failure is already logged
+}
+
+func (r *controlReader) read() Config {
+	var err error
+	r.cfg, err = LoadConfig(r.path, r.cfg)
+	if err != nil && !r.failed {
+		log.Printf("control file: %v, keeping the last configuration", err)
+	}
+	r.failed = err != nil
+	return r.cfg
 }
 
 // Allowed reports whether traffic from ip may be inspected. Entries that are
