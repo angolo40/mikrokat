@@ -13,6 +13,7 @@ SOCKS=127.0.0.1:1080
 APP=http://127.0.0.1:8088
 TEST_CA="Mikrokat E2E test CA"
 ALARM="HTTPS inspection has stopped"
+PORT_ALARM="The HTTPS inspection port is closed"
 COOKIE=e2e-cookie-value
 POST_BODY=e2e-body-value
 BURST=$((2**20))
@@ -25,6 +26,7 @@ export E2E_WORK=
 CHECK=Setup
 RESULT="FAIL: stopped early"
 SERVER_PID=
+HOLDER_PID=
 
 check() {
   CHECK=$1
@@ -146,8 +148,17 @@ badge_shown() {
   curl -s --max-time 2 -b "$E2E_WORK/cookies" "$APP/live/stream" | grep '"sid": 9000001' | grep -q '"decrypted": true'
 }
 
+# alarm_shown <text>: the text is on the Overview page.
 alarm_shown() {
-  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q "$ALARM"
+  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q "$1"
+}
+
+app_up() {
+  curl -s -o /dev/null "$APP/tls.pac"
+}
+
+listening_says() {
+  [ "$(counter listening)" = "$1" ]
 }
 
 # The counters along the path of a copy, from the proxy to Suricata, one name=value per line.
@@ -344,13 +355,30 @@ checks() {
   wait_for 30 control_says false || fail "the control file still says on"
   wait_for 3 port_closed || fail "port 1080 still open 3 seconds after the control file changed"
 
+  check "Port taken"
+  python3 -m http.server --bind "${SOCKS%:*}" "${SOCKS#*:}" >/dev/null 2>&1 &
+  HOLDER_PID=$!
+  wait_for 10 port_open || fail "nothing is holding port 1080"
+  feature on
+  wait_for 30 app_up || fail "the app did not come back"
+  sign_in
+  local taken=$SECONDS
+  wait_for 150 alarm_shown "$PORT_ALARM" || fail "no alarm on the Overview page after 150 seconds"
+  echo "alarm after $((SECONDS - taken)) seconds"
+  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q "address already in use" || fail "the alarm does not give the reason"
+  listening_says false || fail "stats.json says the port is open"
+  kill "$HOLDER_PID"
+  HOLDER_PID=
+  wait_for 30 listening_says true || fail "the proxy did not open the port when it came free"
+
   check "Stopping the proxy"
   feature on
   wait_for 30 port_open || fail "port 1080 did not open again"
+  wait_for 30 app_up || fail "the app did not come back"
   sign_in
   docker stop -t 2 mikrokat-tlsproxy </dev/null >/dev/null
   local stopped=$SECONDS
-  wait_for 150 alarm_shown || fail "no alarm on the Overview page after 150 seconds"
+  wait_for 150 alarm_shown "$ALARM" || fail "no alarm on the Overview page after 150 seconds"
   echo "alarm after $((SECONDS - stopped)) seconds"
   curl -s "$APP/tls.pac" | grep -q '; DIRECT"' || fail "/tls.pac does not end in DIRECT: $(curl -s "$APP/tls.pac")"
 }
@@ -362,6 +390,7 @@ finish() {
   CHECK="Cleaning up"
   echo "== $CHECK"
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null
+  [ -z "$HOLDER_PID" ] || kill "$HOLDER_PID" 2>/dev/null
   ip route del local "$SERVER/32" dev lo 2>/dev/null
   remove_rules
   feature remove

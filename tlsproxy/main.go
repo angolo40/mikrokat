@@ -47,21 +47,23 @@ func main() {
 	}, privateDir, stateDir)
 
 	reader := controlReader{path: controlPath}
-	readControl := func() { server.Apply(reader.read()) }
 	writeStats := func() {
 		if err := stats.WriteFile(statsPath, bypass.Auto(time.Now())); err != nil {
 			log.Printf("stats: %v", err)
 		}
 	}
 
-	readControl()
+	server.Apply(reader.read())
 	writeStats()
 	control := time.NewTicker(controlEvery)
 	status := time.NewTicker(statsEvery)
 	for {
 		select {
 		case <-control.C:
-			readControl()
+			// At once, or the alarm could read the old state just after a switch-on.
+			if server.Apply(reader.read()) {
+				writeStats()
+			}
 		case <-status.C:
 			writeStats()
 		}

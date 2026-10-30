@@ -15,24 +15,44 @@ DISK_LIMIT = 0.90
 
 
 TLS_SILENCE = 60
+TLS_CA_WARNING_DAYS = 30
 
 
 def tls_problem():
-    """The proxy fails open, so when it is on but silent, say so."""
+    """The proxy fails open, so when it is on but silent, or its port is closed, say so."""
     if not store.settings["tls_enabled"]:
         return None
-    at = store.tls_status().get("at")
-    if isinstance(at, (int, float)) and not isinstance(at, bool) and time.time() - at <= TLS_SILENCE:
+    status = store.tls_status()
+    at = status.get("at")
+    if not isinstance(at, (int, float)) or isinstance(at, bool) or time.time() - at > TLS_SILENCE:
+        return "HTTPS inspection has stopped. Devices are browsing without inspection."
+    if store.settings["tls_socks"] and status.get("listening") is False:
+        error = str(status.get("error") or "no reason given")[:200]
+        return f"The HTTPS inspection port is closed: {error}. Devices are browsing without inspection."
+    return None
+
+
+def ca_problem():
+    """Devices stop being inspected when the CA runs out, so warn while there is time to replace it."""
+    if not store.settings["tls_enabled"]:
         return None
-    return "HTTPS inspection has stopped. Devices are browsing without inspection."
+    expires = store.tls_status().get("ca_expires")
+    if not isinstance(expires, (int, float)) or isinstance(expires, bool) or not expires:
+        return None
+    left = expires - time.time()
+    if left >= TLS_CA_WARNING_DAYS * 86400:
+        return None
+    if left <= 0:
+        return "The HTTPS inspection CA has expired, so sites are no longer inspected. Press Regenerate the CA and import it on every device."
+    return f"The HTTPS inspection CA expires in {int(left // 86400)} days. Press Regenerate the CA and import it on every device."
 
 
 def check():
     """Return {key: message} for everything that is wrong right now."""
     found = {}
-    stopped = tls_problem()
-    if stopped:
-        found["tls"] = stopped
+    for key, problem in (("tls", tls_problem()), ("tls_ca", ca_problem())):
+        if problem:
+            found[key] = problem
     counters = web.suricata("dump-counters")
     if not isinstance(counters, dict):
         return {**found, "suricata": "Suricata is not answering."}

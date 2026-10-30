@@ -152,8 +152,9 @@ func NewServer(e *Engine, privateDir, stateDir string) *Server {
 
 // Apply brings the server in line with cfg. It runs on every poll, so it only
 // touches the listener and the connections when cfg asks for something new,
-// and a CA or listen failure is simply tried again by the next call.
-func (s *Server) Apply(cfg Config) {
+// and a CA or listen failure is simply tried again by the next call. It reports
+// whether the state of the proxy changed.
+func (s *Server) Apply(cfg Config) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg = cfg
@@ -163,17 +164,18 @@ func (s *Server) Apply(cfg Config) {
 
 	state := "off"
 	open := false
+	problem := "" // why the port stays closed although cfg wants it open
 	if cfg.Enabled {
 		state = "on, SOCKS off"
 		open = cfg.Socks
 		// Before the listener: Handle needs a CA for every connection.
 		if err := s.loadCA(cfg.CAGeneration); err != nil {
-			state = fmt.Sprintf("on, port closed, CA failed: %v", err)
+			problem = fmt.Sprintf("CA failed: %v", err)
 			open = false
 		}
 		// Without a list, the Docker networks would be open to every device.
 		if open && s.local.Load() == nil {
-			state = "on, port closed, no interface list"
+			problem = "no interface list"
 			open = false
 		}
 	}
@@ -184,8 +186,11 @@ func (s *Server) Apply(cfg Config) {
 	if open {
 		state = fmt.Sprintf("on, SOCKS on port %d, devices %v", cfg.SocksPort, cfg.Devices)
 		if err := s.listen(cfg.SocksPort); err != nil {
-			state = fmt.Sprintf("on, port closed: %v", err)
+			problem = err.Error()
 		}
+	}
+	if problem != "" {
+		state = "on, port closed: " + problem
 	}
 	for device, group := range s.conns {
 		if !open || !cfg.Allowed(net.ParseIP(device)) {
@@ -194,10 +199,13 @@ func (s *Server) Apply(cfg Config) {
 			}
 		}
 	}
-	if state != s.state {
-		s.state = state
-		log.Printf("proxy %s", state)
+	s.Engine.Stats.SetListening(s.ln != nil, problem)
+	if state == s.state {
+		return false
 	}
+	s.state = state
+	log.Printf("proxy %s", state)
+	return true
 }
 
 // readInterfaces refreshes the local networks, so a Docker network created
@@ -225,6 +233,7 @@ func (s *Server) loadCA(generation int) error {
 		return err
 	}
 	s.Engine.CA.Store(ca)
+	s.Engine.Stats.SetCAExpires(ca.cert.NotAfter.Unix())
 	s.caGen = generation
 	log.Printf("CA generation %d loaded", generation)
 	return nil

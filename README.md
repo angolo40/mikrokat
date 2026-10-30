@@ -165,7 +165,7 @@ To keep a rule in Events but stop its notifications and blocks, use **Mute**.
 
 Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It keeps a copy of the traffic and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
 
-It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site with a bad certificate is passed through untouched, so the browser shows its usual warning. If the proxy stops, browsers using the PAC file below go direct, and a health alarm appears within about two minutes.
+It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site with a bad certificate is passed through untouched, so the browser shows its usual warning. If the proxy stops, or it cannot open its port, browsers using the PAC file below go direct, and a health alarm appears within about two minutes. Another alarm warns when the CA has less than 30 days left.
 
 **Inspect only your own devices, or with the consent of the person using them.** Whoever runs Mikrokat can see the URLs they open.
 

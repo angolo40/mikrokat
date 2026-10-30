@@ -25,6 +25,9 @@ type Stats struct {
 	handshakes int64
 	copied     int64
 	dropped    int64
+	listening  bool
+	problem    string
+	caExpires  int64
 }
 
 // NewStats returns counters whose start time is now.
@@ -74,6 +77,21 @@ func (s *Stats) CopyDropped() {
 	s.mu.Unlock()
 }
 
+// SetListening records whether the port is open, and if the configuration wants
+// it open but it is not, why.
+func (s *Stats) SetListening(listening bool, problem string) {
+	s.mu.Lock()
+	s.listening, s.problem = listening, problem
+	s.mu.Unlock()
+}
+
+// SetCAExpires records when the loaded CA expires, in Unix seconds.
+func (s *Stats) SetCAExpires(at int64) {
+	s.mu.Lock()
+	s.caExpires = at
+	s.mu.Unlock()
+}
+
 type statsFile struct {
 	At         int64            `json:"at"`
 	Started    int64            `json:"started"`
@@ -84,6 +102,9 @@ type statsFile struct {
 	Copied     int64            `json:"copied_bytes"`
 	Dropped    int64            `json:"copies_dropped"`
 	AutoBypass []AutoEntry      `json:"auto_bypass"`
+	Listening  bool             `json:"listening"`
+	Error      string           `json:"error"`
+	CAExpires  int64            `json:"ca_expires"`
 }
 
 // WriteFile writes the counters to path through a temporary file and a rename,
@@ -100,6 +121,9 @@ func (s *Stats) WriteFile(path string, auto []AutoEntry) error {
 		Copied:     s.copied,
 		Dropped:    s.dropped,
 		AutoBypass: auto,
+		Listening:  s.listening,
+		Error:      s.problem,
+		CAExpires:  s.caExpires,
 	}
 	for k, v := range s.relayed {
 		f.Relayed[k] = v

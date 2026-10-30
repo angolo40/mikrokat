@@ -440,6 +440,96 @@ func TestPortInUseIsRetried(t *testing.T) {
 	r.relayed(t, "127.0.0.1")
 }
 
+// reported returns what the next stats.json would say about the port.
+func (r *socksRig) reported() (bool, string) {
+	s := r.Engine.Stats
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listening, s.problem
+}
+
+func TestListeningIsReported(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Apply(r.cfg)
+	if ok, problem := r.reported(); !ok || problem != "" {
+		t.Fatalf("on: %v, %q", ok, problem)
+	}
+	noSocks := r.cfg
+	noSocks.Socks = false
+	r.Apply(noSocks)
+	if ok, problem := r.reported(); ok || problem != "" {
+		t.Fatalf("SOCKS off: %v, %q", ok, problem)
+	}
+	r.Apply(Config{})
+	if ok, problem := r.reported(); ok || problem != "" {
+		t.Fatalf("off: %v, %q", ok, problem)
+	}
+}
+
+func TestPortInUseIsReported(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	l, err := net.Listen("tcp", r.addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	r.Apply(r.cfg)
+	if ok, problem := r.reported(); ok || !strings.Contains(problem, "address already in use") {
+		t.Fatalf("%v, %q", ok, problem)
+	}
+	l.Close()
+	r.Apply(r.cfg)
+	if ok, problem := r.reported(); !ok || problem != "" {
+		t.Fatalf("after the retry: %v, %q", ok, problem)
+	}
+}
+
+func TestCAFailureIsReported(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.PrivateDir = filepath.Join(t.TempDir(), "not-a-folder")
+	if err := os.WriteFile(r.PrivateDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.Apply(r.cfg)
+	if ok, problem := r.reported(); ok || !strings.Contains(problem, "not-a-folder") {
+		t.Fatalf("%v, %q", ok, problem)
+	}
+}
+
+func TestNoInterfaceListIsReported(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Interfaces = func() ([]HostInterface, error) { return nil, errors.New("netlink busy") }
+	r.Apply(r.cfg)
+	if ok, problem := r.reported(); ok || problem == "" {
+		t.Fatalf("%v, %q", ok, problem)
+	}
+}
+
+func TestCAExpiryIsReported(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Apply(r.cfg)
+	s := r.Engine.Stats
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if want := r.Engine.CA.Load().cert.NotAfter.Unix(); s.caExpires != want {
+		t.Fatalf("got %d, want %d", s.caExpires, want)
+	}
+}
+
+func TestApplyReportsChange(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	r.Apply(Config{})
+	if r.Apply(Config{}) {
+		t.Fatal("no change, but Apply says so")
+	}
+	if !r.Apply(r.cfg) {
+		t.Fatal("switched on, but Apply says nothing changed")
+	}
+	if r.Apply(r.cfg) {
+		t.Fatal("no change, but Apply says so")
+	}
+}
+
 func TestAppliesBypass(t *testing.T) {
 	r := newSocksRig(t, echoServer(t, ""))
 	now := time.Now()

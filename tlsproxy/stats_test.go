@@ -19,6 +19,8 @@ func TestStatsFile(t *testing.T) {
 	s.Copied(10)
 	s.Copied(5)
 	s.CopyDropped()
+	s.SetListening(false, "port taken")
+	s.SetCAExpires(1234)
 	if err := s.WriteFile(p, []AutoEntry{{Device: "192.0.2.5", Name: "x", Until: 99}}); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +33,8 @@ func TestStatsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, k := range []string{"at", "started", "inspected", "relayed", "refused",
-		"handshake_failures", "copied_bytes", "copies_dropped", "auto_bypass"} {
+		"handshake_failures", "copied_bytes", "copies_dropped", "auto_bypass",
+		"listening", "error", "ca_expires"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("missing key %q", k)
 		}
@@ -44,6 +47,9 @@ func TestStatsFile(t *testing.T) {
 	json.Unmarshal(m["copied_bytes"], &copied)
 	if copied != 15 {
 		t.Fatalf("copied_bytes = %d", copied)
+	}
+	if got := string(m["listening"]) + " " + string(m["error"]) + " " + string(m["ca_expires"]); got != `false "port taken" 1234` {
+		t.Fatalf("listening, error, ca_expires = %s", got)
 	}
 	var auto []AutoEntry
 	if err := json.Unmarshal(m["auto_bypass"], &auto); err != nil || len(auto) != 1 || auto[0].Until != 99 {

@@ -134,7 +134,7 @@ The app has no socket to the proxy. They share files:
 | Folder | Written by | Holds |
 |---|---|---|
 | `data/tls/control` | app | `config.json`: on or off, entry points, devices, own bypass list. The proxy reads it every 2 seconds. |
-| `data/tls/state` | proxy | `ca.pem`, and `stats.json` every 10 seconds |
+| `data/tls/state` | proxy | `ca.pem`, and `stats.json` every 10 seconds and when the state of the port changes |
 | `data/tls/private` | proxy | `ca.key` |
 
 ### Web
@@ -152,7 +152,7 @@ Alerts from decrypted traffic get a `decrypted` badge on Live and on the host pa
 
 ### Health
 
-`health.check()` reports a problem when the feature is on and `stats.json` is older than 60 seconds, so a stopped proxy reaches the owner through the usual channels. Without this, fail-open would be silent.
+`health.check()` reports a problem when the feature is on and `stats.json` is older than 60 seconds, so a stopped proxy reaches the owner through the usual channels. It also reports one when SOCKS is on and `stats.json` says `listening` is false, with the reason from `error`: a taken port or a CA that cannot load leaves the proxy running and the PAC going direct. Without this, fail-open would be silent. `stats.json` also holds `ca_expires`, and a separate problem appears when that is under 30 days away.
 
 ## Security and privacy
 
