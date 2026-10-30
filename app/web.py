@@ -465,6 +465,9 @@ def host_page(host, ip):
     status = (f'<div class="status"><span class="state">{state}</span>{fact(ip, "")}{fact(geo.country(ip) or "No country", "")}'
               f'{fact(first or "never", "first seen")}{fact(last or "never", "last seen")}</div>')
     tiles = tile(number(important), "Important alerts, 7 days") + tile(number(total), "All alerts, 7 days") + tile(number(len(peers)), "Addresses in contact")
+    decrypted = store.decrypted_count(ip)
+    if decrypted:
+        tiles += tile(number(decrypted), "Decrypted alerts, 7 days")
     rows = [[severity_badge(sev), rule_link(host, sid, sig), number(int(count)), explain_button(sid)] for sid, sev, sig, count, _ in rules]
     contacts = [[host_link(peer) + country_tag(peer), number(int(count))] for peer, count in peers]
     latest = [[f'<span class="when-text">{esc(a[0][5:16])}</span>', esc(a[4]), rule_link(host, a[2], a[3] or a[2])] for a in taken]
@@ -824,6 +827,7 @@ function line(e) {
   if (e.country) { sub.append(' · ' + e.country); }
   if (e.rule) { sub.textContent = e.rule; }
   text.append(sub);
+  if (e.decrypted) { const mark = document.createElement('span'); mark.className = 'badge low'; mark.textContent = 'decrypted'; text.append(' ', mark); }
   const remote = e.address || (e.kind === 'alert' && e.remote);
   if (remote) { const tools = document.createElement('div'); tools.className = 'tools'; tools.append(act('/block', 'address', remote, 'Block'), act('/allow', 'network', remote, 'Allow')); text.append(tools); }
   const count = document.createElement('span'); count.className = 'count'; count.hidden = true; count.dataset.n = '1';

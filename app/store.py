@@ -99,6 +99,7 @@ problems = {}
 schedule = {}
 pending_hosts = {}
 pending_peers = {}
+pending_decrypted = {}
 HOST_DAYS = 7
 STRIKE_DAYS = 90
 lock = threading.Lock()
@@ -166,6 +167,7 @@ def load():
             CREATE TABLE IF NOT EXISTS hourly_countries (hour TEXT, country TEXT, count INT, PRIMARY KEY (hour, country));
             CREATE TABLE IF NOT EXISTS hourly_hosts (hour TEXT, address TEXT, sid INT, severity INT, signature TEXT, count INT, PRIMARY KEY (hour, address, sid));
             CREATE TABLE IF NOT EXISTS hourly_peers (hour TEXT, address TEXT, peer TEXT, count INT, PRIMARY KEY (hour, address, peer));
+            CREATE TABLE IF NOT EXISTS hourly_decrypted (hour TEXT, address TEXT, count INT, PRIMARY KEY (hour, address));
             CREATE TABLE IF NOT EXISTS explanations (sid INT PRIMARY KEY, text TEXT, at TEXT);
             CREATE TABLE IF NOT EXISTS actions (at TEXT, address TEXT, severity INT, sid INT, signature TEXT, action TEXT, outbound INT);
         """)
@@ -189,6 +191,15 @@ def write_tls_control():
         print(f"[mikrokat] cannot write the TLS control file: {failure}", flush=True)
         return "Saved, but the HTTPS inspection control file could not be written."
     return None
+
+
+DECRYPTED_VLAN = 3900  # the TLS proxy rebuilds traffic on this VLAN, see the TLS inspection design
+
+
+def is_decrypted(event):
+    """True when the alert came from traffic the TLS proxy decrypted."""
+    vlan = event.get("vlan")
+    return DECRYPTED_VLAN in (vlan if isinstance(vlan, list) else [vlan])
 
 
 def tls_status():
@@ -548,18 +559,22 @@ def count_alert(event, address, country=""):
             pending_hosts[key] = pending_hosts.get(key, 0) + 1
             key = (hour, side, peer)
             pending_peers[key] = pending_peers.get(key, 0) + 1
+            if is_decrypted(event):
+                key = (hour, side)
+                pending_decrypted[key] = pending_decrypted.get(key, 0) + 1
 
 
 def flush():
     if not (pending_alerts or pending_addresses or pending_countries):
         return
     alerts, addresses, countries = dict(pending_alerts), dict(pending_addresses), dict(pending_countries)
-    hosts, peers = dict(pending_hosts), dict(pending_peers)
+    hosts, peers, decrypted = dict(pending_hosts), dict(pending_peers), dict(pending_decrypted)
     pending_alerts.clear()
     pending_addresses.clear()
     pending_countries.clear()
     pending_hosts.clear()
     pending_peers.clear()
+    pending_decrypted.clear()
     with database() as db:
         db.executemany("""INSERT INTO hourly_alerts VALUES (?, ?, ?, ?, ?)
                           ON CONFLICT (hour, sid) DO UPDATE SET count = count + excluded.count""",
@@ -576,6 +591,9 @@ def flush():
         db.executemany("""INSERT INTO hourly_peers VALUES (?, ?, ?, ?)
                           ON CONFLICT (hour, address, peer) DO UPDATE SET count = count + excluded.count""",
                        [(*k, v) for k, v in peers.items()])
+        db.executemany("""INSERT INTO hourly_decrypted VALUES (?, ?, ?)
+                          ON CONFLICT (hour, address) DO UPDATE SET count = count + excluded.count""",
+                       [(*k, v) for k, v in decrypted.items()])
 
 
 def record_action(address, alert, action, outbound):
@@ -591,6 +609,7 @@ def prune():
     with database() as db:
         db.execute("DELETE FROM hourly_hosts WHERE hour < ?", (recent,))
         db.execute("DELETE FROM hourly_peers WHERE hour < ?", (recent,))
+        db.execute("DELETE FROM hourly_decrypted WHERE hour < ?", (recent,))
         db.execute("DELETE FROM hourly_alerts WHERE hour < ?", (limit,))
         db.execute("DELETE FROM hourly_addresses WHERE hour < ?", (limit,))
         db.execute("DELETE FROM hourly_countries WHERE hour < ?", (limit,))
@@ -647,6 +666,13 @@ def host_summary(address):
         taken = db.execute("SELECT at, severity, sid, signature, action FROM actions WHERE address = ? ORDER BY at DESC LIMIT 15", (address,)).fetchall()
         first, last = db.execute("SELECT MIN(hour), MAX(hour) FROM hourly_hosts WHERE address = ?", (address,)).fetchone()
     return rules, peers, taken, first, last
+
+
+def decrypted_count(address, days=7):
+    """Return how many alerts on decrypted traffic involved this address in the last days."""
+    since = time.strftime("%Y-%m-%d %H", time.localtime(time.time() - days * 86400))
+    with database() as db:
+        return db.execute("SELECT COALESCE(SUM(count), 0) FROM hourly_decrypted WHERE address = ? AND hour >= ?", (address, since)).fetchone()[0]
 
 
 def rule_facts(sid):

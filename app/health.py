@@ -14,12 +14,28 @@ RULES_MAX_AGE_DAYS = 8
 DISK_LIMIT = 0.90
 
 
+TLS_SILENCE = 60
+
+
+def tls_problem():
+    """The proxy fails open, so when it is on but silent, say so."""
+    if not store.settings["tls_enabled"]:
+        return None
+    at = store.tls_status().get("at")
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and time.time() - at <= TLS_SILENCE:
+        return None
+    return "HTTPS inspection has stopped. Devices are browsing without inspection."
+
+
 def check():
     """Return {key: message} for everything that is wrong right now."""
     found = {}
+    stopped = tls_problem()
+    if stopped:
+        found["tls"] = stopped
     counters = web.suricata("dump-counters")
     if not isinstance(counters, dict):
-        return {"suricata": "Suricata is not answering."}
+        return {**found, "suricata": "Suricata is not answering."}
     packets = (counters.get("capture") or {}).get("kernel_packets", 0)
     now = time.time()
     if packets != state["packets"]:

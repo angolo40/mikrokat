@@ -51,7 +51,7 @@ def handle(event):
     store.count_alert(event, target[0] if target else None, country)
     store.activity_add("alert", str(alert.get("signature", "")), severity=alert.get("severity"), sid=alert.get("signature_id"),
                        source=event.get("src_ip"), destination=event.get("dest_ip"), country=country, remote=target[0] if target else "",
-                       source_name=store.name_of(event.get("src_ip")), destination_name=store.name_of(event.get("dest_ip")))
+                       decrypted=store.is_decrypted(event), source_name=store.name_of(event.get("src_ip")), destination_name=store.name_of(event.get("dest_ip")))
     if str(alert.get("severity")) not in settings["severities"] or str(alert.get("signature_id")) in settings["ignore_sids"]:
         return
     if target is None:
