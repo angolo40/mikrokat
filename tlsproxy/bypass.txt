@@ -1,0 +1,40 @@
+# Names the proxy never decrypts: one suffix per line, "#" starts a comment.
+# A name matches itself and every subdomain. This list is a starting point
+# and is not complete: add your own names in the app.
+
+# Encrypted ClientHello: the real name is hidden, so the proxy cannot decide.
+cloudflare-ech.com
+
+# Operating system and browser updates
+update.microsoft.com
+windowsupdate.com
+delivery.mp.microsoft.com
+swscan.apple.com
+swcdn.apple.com
+download.mozilla.org
+aus5.mozilla.org
+versioncheck.addons.mozilla.org
+update.googleapis.com
+
+# Banks and payments, Italy
+intesasanpaolo.com
+unicredit.it
+poste.it
+postepay.it
+bancobpm.it
+mps.it
+bnl.it
+paypal.com
+
+# Banks, Switzerland
+ubs.com
+postfinance.ch
+raiffeisen.ch
+zkb.ch
+
+# Health, Italy and Switzerland
+fascicolosanitario.gov.it
+agenziaentrate.gov.it
+inps.it
+spid.gov.it
+cie.interno.gov.it
