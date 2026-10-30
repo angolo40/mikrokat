@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,10 +18,11 @@ const (
 	dialLimit  = 10 * time.Second
 )
 
-// Forbidden reports whether a device may not connect to ip. The proxy shares
-// the network of the host, so these addresses would reach the host itself.
-// The net.IP methods also match IPv4-mapped forms, and IsMulticast covers
-// every scope, interface-local included.
+// Forbidden reports whether ip is in a class no device may connect to. The
+// proxy shares the network of the host, so these addresses would reach the
+// host itself. The net.IP methods also match IPv4-mapped forms, and IsMulticast
+// covers every scope, interface-local included. Server.refused adds the
+// addresses that depend on the host.
 func Forbidden(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified()
 }
@@ -31,6 +34,74 @@ func Dial(ctx context.Context, d Dest) (net.Conn, error) {
 	return dialer.DialContext(ctx, "tcp", net.JoinHostPort(d.IP.String(), strconv.Itoa(d.Port)))
 }
 
+// HostInterface is one network interface of the host.
+type HostInterface struct {
+	Name  string
+	Addrs []*net.IPNet
+}
+
+// hostInterfaces lists the interfaces the proxy sees, which are the host's
+// because it shares its network.
+func hostInterfaces() ([]HostInterface, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]HostInterface, 0, len(ifaces))
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		h := HostInterface{Name: iface.Name}
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok {
+				h.Addrs = append(h.Addrs, n)
+			}
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// localNets is what the interfaces of the host put out of reach: its own
+// addresses, on any interface, and the whole subnet of each Docker bridge. The
+// containers there expect only the host's own traffic, and EveBox has no login
+// of its own. Other subnets, such as the LAN, stay reachable.
+type localNets struct {
+	hosts   []net.IP
+	bridges []*net.IPNet
+}
+
+func newLocalNets(ifaces []HostInterface) *localNets {
+	l := &localNets{}
+	for _, iface := range ifaces {
+		bridge := strings.HasPrefix(iface.Name, "docker") || strings.HasPrefix(iface.Name, "br-")
+		for _, a := range iface.Addrs {
+			l.hosts = append(l.hosts, a.IP)
+			if bridge {
+				l.bridges = append(l.bridges, a)
+			}
+		}
+	}
+	return l
+}
+
+// contains also matches IPv4-mapped forms: Equal and Contains both normalise.
+func (l *localNets) contains(ip net.IP) bool {
+	for _, h := range l.hosts {
+		if h.Equal(ip) {
+			return true
+		}
+	}
+	for _, n := range l.bridges {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // Server owns the SOCKS listener and the connections it accepted. Apply is
 // the only way to change it, so the control file decides what is open.
 type Server struct {
@@ -39,15 +110,19 @@ type Server struct {
 	StateDir   string
 	Resolve    func(ctx context.Context, host string) ([]net.IP, error)
 	GreetLimit time.Duration // zero means 5 seconds
+	Interfaces func() ([]HostInterface, error)
 
-	mu       sync.Mutex
-	cfg      Config
-	ln       net.Listener // nil while the port is closed
-	port     int
-	caGen    int
-	conns    map[string]map[uint64]context.CancelFunc // by device, then by connection
-	nextConn uint64
-	state    string // the last line logged by Apply
+	local atomic.Pointer[localNets] // nil until the first list, and Apply opens no port before that
+
+	mu         sync.Mutex
+	cfg        Config
+	ln         net.Listener // nil while the port is closed
+	port       int
+	caGen      int
+	conns      map[string]map[uint64]context.CancelFunc // by device, then by connection
+	nextConn   uint64
+	state      string // the last line logged by Apply
+	listFailed bool   // the current failure to list interfaces is already logged
 }
 
 // NewServer returns a Server with the port closed. The CA is loaded into e.CA
@@ -60,7 +135,8 @@ func NewServer(e *Engine, privateDir, stateDir string) *Server {
 		Resolve: func(ctx context.Context, host string) ([]net.IP, error) {
 			return net.DefaultResolver.LookupIP(ctx, "ip", host)
 		},
-		conns: make(map[string]map[uint64]context.CancelFunc),
+		Interfaces: hostInterfaces,
+		conns:      make(map[string]map[uint64]context.CancelFunc),
 	}
 }
 
@@ -73,6 +149,7 @@ func (s *Server) Apply(cfg Config) {
 	s.cfg = cfg
 	s.Engine.Bypass.SetOwn(cfg.Bypass)
 	s.Engine.Bypass.Apply(cfg.AutoRemove)
+	s.readInterfaces()
 
 	state := "off"
 	open := false
@@ -82,6 +159,11 @@ func (s *Server) Apply(cfg Config) {
 		// Before the listener: Handle needs a CA for every connection.
 		if err := s.loadCA(cfg.CAGeneration); err != nil {
 			state = fmt.Sprintf("on, port closed, CA failed: %v", err)
+			open = false
+		}
+		// Without a list, the Docker networks would be open to every device.
+		if open && s.local.Load() == nil {
+			state = "on, port closed, no interface list"
 			open = false
 		}
 	}
@@ -106,6 +188,21 @@ func (s *Server) Apply(cfg Config) {
 		s.state = state
 		log.Printf("proxy %s", state)
 	}
+}
+
+// readInterfaces refreshes the local networks, so a Docker network created
+// later is covered by the next poll. A failure keeps the last good list.
+func (s *Server) readInterfaces() {
+	ifaces, err := s.Interfaces()
+	if err != nil {
+		if !s.listFailed {
+			log.Printf("interface list: %v", err)
+			s.listFailed = true
+		}
+		return
+	}
+	s.listFailed = false
+	s.local.Store(newLocalNets(ifaces))
 }
 
 // loadCA stores the CA of this generation, unless it is already there.
@@ -227,7 +324,7 @@ func (s *Server) serve(ctx context.Context, c net.Conn, device net.IP) {
 		}
 		d = Dest{IP: ip, Port: d.Port}
 	}
-	if Forbidden(d.IP) {
+	if s.refused(d.IP) {
 		Reply(c, ReplyNotAllowed)
 		return
 	}
@@ -238,6 +335,11 @@ func (s *Server) serve(ctx context.Context, c net.Conn, device net.IP) {
 			Reply(c, ReplyUnreachable)
 		}
 	})
+}
+
+// refused reports whether a device may not connect to ip.
+func (s *Server) refused(ip net.IP) bool {
+	return Forbidden(ip) || s.local.Load().contains(ip)
 }
 
 // lookup returns the first IPv4 address of host, else the first IPv6.

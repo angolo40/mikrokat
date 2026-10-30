@@ -43,6 +43,7 @@ func newSocksRig(t *testing.T, target string) *socksRig {
 			return new(net.Dialer).DialContext(ctx, "tcp4", target)
 		},
 	}, t.TempDir(), t.TempDir())
+	r.Interfaces = func() ([]HostInterface, error) { return nil, nil }
 	r.cfg = Config{Enabled: true, Socks: true, SocksPort: freePort(t), Devices: []string{"127.0.0.1"}}
 	t.Cleanup(func() {
 		r.Apply(Config{})
@@ -655,4 +656,190 @@ func TestLogsEachChangeOnce(t *testing.T) {
 	if n := lines(); n != on {
 		t.Fatalf("%d lines, want %d: %q", n, on, r.logs)
 	}
+}
+
+// addrs parses interface addresses, keeping the host part as the system does.
+func addrs(t *testing.T, list ...string) []*net.IPNet {
+	t.Helper()
+	var out []*net.IPNet
+	for _, s := range list {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, &net.IPNet{IP: ip, Mask: n.Mask})
+	}
+	return out
+}
+
+// fakeInterfaces is a host on a LAN and a VPN, with the default Docker bridge,
+// a compose network, and a bridge that is not Docker's.
+func fakeInterfaces(t *testing.T) []HostInterface {
+	t.Helper()
+	return []HostInterface{
+		{"lo", addrs(t, "127.0.0.1/8", "::1/128")},
+		{"eth0", addrs(t, "10.0.10.24/24", "2001:db8:10::24/64")},
+		{"wg0", addrs(t, "10.8.0.1/24")},
+		{"bridge0", addrs(t, "192.0.2.1/24")},
+		{"docker0", addrs(t, "172.17.0.1/16")},
+		{"br-7729c41117fb", addrs(t, "172.18.0.1/16", "fd00:18::1/64")},
+	}
+}
+
+// literal returns the SOCKS form of ip as written: "::ffff:" stays IPv6.
+func literal(ip string) (byte, []byte) {
+	if strings.Contains(ip, ":") {
+		return 4, net.ParseIP(ip).To16()
+	}
+	return 1, net.ParseIP(ip).To4()
+}
+
+// connectTo runs a CONNECT for ip on a new connection, first as a literal and
+// then as a name resolving to it, and returns both reply codes.
+func (r *socksRig) connectTo(t *testing.T, ip string) (asLiteral, asName byte) {
+	t.Helper()
+	r.Resolve = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP(ip)}, nil
+	}
+	atyp, addr := literal(ip)
+	asLiteral = socksConnect(t, r.open(t, "127.0.0.1"), atyp, addr, 5636)
+	asName = socksConnect(t, r.open(t, "127.0.0.1"), 3, domain("inside.test"), 5636)
+	return asLiteral, asName
+}
+
+func TestLocalAddressRefused(t *testing.T) {
+	for _, dest := range []string{
+		"10.0.10.24", "::ffff:10.0.10.24", "2001:db8:10::24", "10.8.0.1", // the host itself
+		"172.18.0.1", "172.18.0.4", "172.18.255.254", "::ffff:172.18.0.4", "fd00:18::4", // br-
+		"172.17.0.1", "172.17.0.5", // docker0
+	} {
+		t.Run(dest, func(t *testing.T) {
+			r := newSocksRig(t, echoServer(t, ""))
+			r.Interfaces = func() ([]HostInterface, error) { return fakeInterfaces(t), nil }
+			r.Apply(r.cfg)
+			lit, name := r.connectTo(t, dest)
+			if lit != ReplyNotAllowed || name != ReplyNotAllowed {
+				t.Fatalf("reply codes %d and %d", lit, name)
+			}
+			if n := r.dials.Load(); n != 0 {
+				t.Fatalf("%d dials", n)
+			}
+		})
+	}
+	// Only Docker's subnets are closed. A private destination is otherwise relayed.
+	for _, dest := range []string{"10.0.10.25", "2001:db8:10::25", "10.8.0.2", "192.0.2.7", "172.19.0.4"} {
+		t.Run("allowed "+dest, func(t *testing.T) {
+			r := newSocksRig(t, echoServer(t, ""))
+			r.Interfaces = func() ([]HostInterface, error) { return fakeInterfaces(t), nil }
+			r.Apply(r.cfg)
+			lit, name := r.connectTo(t, dest)
+			if lit != ReplyOK || name != ReplyOK {
+				t.Fatalf("reply codes %d and %d", lit, name)
+			}
+			if d := r.last.Load(); !d.IP.Equal(net.ParseIP(dest)) {
+				t.Fatalf("dialled %+v", d)
+			}
+		})
+	}
+}
+
+func TestNewDockerNetworkCoveredByNextApply(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	ifaces := fakeInterfaces(t)
+	r.Interfaces = func() ([]HostInterface, error) { return ifaces, nil }
+	r.Apply(r.cfg)
+	if lit, _ := r.connectTo(t, "172.19.0.4"); lit != ReplyOK {
+		t.Fatalf("reply code %d before the network exists", lit)
+	}
+	ln := r.ln
+	ifaces = append(ifaces, HostInterface{"br-1234567890ab", addrs(t, "172.19.0.1/16")})
+	r.Apply(r.cfg)
+	if lit, name := r.connectTo(t, "172.19.0.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
+		t.Fatalf("reply codes %d and %d", lit, name)
+	}
+	if r.ln != ln {
+		t.Fatal("listener reopened")
+	}
+}
+
+func TestInterfaceFailureKeepsLastList(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	var fail error
+	r.Interfaces = func() ([]HostInterface, error) {
+		if fail != nil {
+			return nil, fail
+		}
+		return fakeInterfaces(t), nil
+	}
+	logged := func() int { return strings.Count(r.logs.String(), "netlink busy") }
+	r.Apply(r.cfg)
+	fail = errors.New("netlink busy")
+	r.Apply(r.cfg)
+	r.Apply(r.cfg)
+	if n := logged(); n != 1 {
+		t.Fatalf("logged %d times: %q", n, r.logs)
+	}
+	if lit, name := r.connectTo(t, "172.18.0.4"); lit != ReplyNotAllowed || name != ReplyNotAllowed {
+		t.Fatalf("reply codes %d and %d", lit, name)
+	}
+	r.relayed(t, "127.0.0.1")
+	// A later failure is a new one.
+	fail = nil
+	r.Apply(r.cfg)
+	fail = errors.New("netlink busy")
+	r.Apply(r.cfg)
+	if n := logged(); n != 2 {
+		t.Fatalf("logged %d times: %q", n, r.logs)
+	}
+}
+
+func TestNoInterfaceListKeepsPortClosed(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	fail := errors.New("netlink busy")
+	r.Interfaces = func() ([]HostInterface, error) {
+		if fail != nil {
+			return nil, fail
+		}
+		return fakeInterfaces(t), nil
+	}
+	r.Apply(r.cfg)
+	r.Apply(r.cfg)
+	portClosed(t, r.addr())
+	if n := strings.Count(r.logs.String(), "netlink busy"); n != 1 {
+		t.Fatalf("logged %d times: %q", n, r.logs)
+	}
+	// The next poll tries again.
+	fail = nil
+	r.Apply(r.cfg)
+	r.relayed(t, "127.0.0.1")
+}
+
+func TestInterfacesReadOnEachApply(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	calls := 0
+	r.Interfaces = func() ([]HostInterface, error) {
+		calls++
+		return nil, nil
+	}
+	r.Apply(r.cfg)
+	r.Apply(r.cfg)
+	r.Apply(Config{})
+	if calls != 3 {
+		t.Fatalf("%d reads", calls)
+	}
+}
+
+func TestHostInterfaces(t *testing.T) {
+	ifaces, err := NewServer(&Engine{}, "", "").Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range ifaces {
+		for _, a := range iface.Addrs {
+			if a.IP.Equal(net.ParseIP("127.0.0.1")) && a.Contains(net.ParseIP("127.9.9.9")) {
+				return
+			}
+		}
+	}
+	t.Fatalf("no loopback network in %+v", ifaces)
 }
