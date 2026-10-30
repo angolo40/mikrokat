@@ -49,7 +49,7 @@ Suricata cannot decrypt anything. It reads the plaintext only because the proxy 
 
 ### Container
 
-New service `tlsproxy`, built from `tlsproxy/`, written in Go with the standard library only, and no third-party modules. The build uses an exact Go image tag and the final image is Alpine with `iptables`.
+New service `tlsproxy`, built from `tlsproxy/`, written in Go with the standard library only, and no third-party modules. The build uses an exact Go image tag and the final image is Alpine. Phase 2 adds `iptables` to it.
 
 It runs apart from `mikrokat-app` because every web update restarts that process, which would drop live connections. It always runs, and listens on nothing while the feature is off, because Mikrokat has no Docker socket and cannot start containers.
 
@@ -60,12 +60,12 @@ Compose settings follow the other services: host network, `cap_drop: ALL`, `no-n
 Each connection follows the same steps, whichever entry it came from:
 
 1. Refuse it unless the source address is in the device list.
-2. Get the destination address and port from the entry point.
-3. Read the TLS ClientHello without consuming it, with a 5 second limit.
+2. Get the destination address and port from the entry point. Refuse loopback, link-local, multicast and unspecified destinations, so a listed device cannot reach services bound to the host.
+3. If the port is 443, read the TLS ClientHello without consuming it, with a 5 second limit. Other ports skip this step, because protocols such as SMTP wait for the server to speak first.
 4. Relay it untouched, counting the reason, if any of these is true:
    - the port is not 443, or the bytes are not TLS
    - the destination is private or IPv6
-   - there is no server name, or Encrypted Client Hello is in use
+   - there is no server name
    - the name matches the bypass list or the automatic bypass
 5. Open TLS to the real server, verify its chain against the Mozilla roots, and offer only `http/1.1`.
 6. If that verification fails, relay the original connection untouched, so the client sees the real certificate and shows its usual warning. The proxy never hides a bad certificate.
@@ -105,7 +105,7 @@ The CA key stays in `data/tls/private`, mounted only in `tlsproxy`, mode 600. Th
 
 ### Bypass
 
-- **Built-in list:** suffixes for banks, health services and Windows and browser update services, stored as a file in the repository.
+- **Built-in list:** suffixes for banks, health services and Windows and browser update services, stored as a file in the repository. It also holds the public names used by Encrypted Client Hello, such as `cloudflare-ech.com`: a real ECH extension cannot be told from the fake one browsers send, so the outer name is the only signal.
 - **Own list:** names the owner adds in Settings.
 - **Automatic:** when a client aborts the handshake with our certificate, that device and name are relayed untouched for 24 hours. This is how apps with pinned certificates keep working.
 
@@ -206,4 +206,4 @@ Phase 1 is done when:
 | The VLAN tag is lost on the way to Suricata | First integration test | Mark decrypted traffic with destination port 10080 |
 | Loopback TZSP loses packets under load | Throughput test, comparing bytes sent and seen | Lower the copy limit |
 | `REDIRECT` does not work in the unprivileged LXC | First step of phase 2 | Run the transparent entry on a privileged host, or keep SOCKS only |
-| Encrypted Client Hello grows | Counter of relayed connections by reason | Accept it: those connections stay uninspected |
+| Encrypted Client Hello grows | Counter of relayed connections by reason, and the `cloudflare-ech.com` bypass entry | Accept it: those connections stay uninspected |
