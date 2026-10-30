@@ -25,6 +25,22 @@ services:
       - no-new-privileges:true
     read_only: true
 
+  tlsproxy:
+    build: ./tlsproxy
+    container_name: mikrokat-tlsproxy
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    volumes:
+      - ./data/tls/control:/tls/control:ro
+      - ./data/tls/state:/tls/state
+      - ./data/tls/private:/tls/private
+
   suricata:
     image: jasonish/suricata:8.0.8
     container_name: mikrokat-suricata
