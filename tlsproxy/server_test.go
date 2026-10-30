@@ -899,7 +899,7 @@ func fakeInterfaces(t *testing.T) []HostInterface {
 	t.Helper()
 	return []HostInterface{
 		{"lo", addrs(t, "127.0.0.1/8", "::1/128")},
-		{"eth0", addrs(t, "10.0.10.24/24", "2001:db8:10::24/64")},
+		{"eth0", addrs(t, "10.20.30.24/24", "2001:db8:10::24/64")},
 		{"wg0", addrs(t, "10.8.0.1/24")},
 		{"bridge0", addrs(t, "192.0.2.1/24")},
 		{"docker0", addrs(t, "172.17.0.1/16")},
@@ -930,7 +930,7 @@ func (r *socksRig) connectTo(t *testing.T, ip string) (asLiteral, asName byte) {
 
 func TestLocalAddressRefused(t *testing.T) {
 	for _, dest := range []string{
-		"10.0.10.24", "::ffff:10.0.10.24", "2001:db8:10::24", "10.8.0.1", // the host itself
+		"10.20.30.24", "::ffff:10.20.30.24", "2001:db8:10::24", "10.8.0.1", // the host itself
 		"172.18.0.1", "172.18.0.4", "172.18.255.254", "::ffff:172.18.0.4", "fd00:18::4", // br-
 		"203.0.113.1", "203.0.113.4", "::ffff:203.0.113.4", // br-, with a public subnet
 		"172.17.0.1", "172.17.0.5", // docker0
@@ -969,7 +969,7 @@ func TestLocalAddressRefused(t *testing.T) {
 // the router from the host's address. No port is an exception.
 func TestPrivateDestinationRefused(t *testing.T) {
 	for _, dest := range []string{
-		"10.0.10.25", "10.8.0.2", "172.19.0.4", "192.168.88.1", "::ffff:192.168.88.1", // private
+		"10.20.30.25", "10.8.0.2", "172.19.0.4", "192.168.88.1", "::ffff:192.168.88.1", // private
 		"100.64.0.1", "100.127.255.254", "::ffff:100.100.100.100", // CGNAT
 		"fc00::1", "fd12:3456::1", // unique local
 	} {
