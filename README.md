@@ -177,7 +177,7 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 - Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one: it names a few institutions, in Italy and Switzerland, plus PayPal. Any other bank, payment or health site is decrypted unless you add it first.
 - Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
-- Everything, once the CA has expired. Connections keep working and are counted as `ca_expired`. Press **Regenerate the CA** before that.
+- Everything, once the CA has expired. Connections keep working and are counted as `ca_expired`. Press **Regenerate the CA** before that, or upload a new CA if you use your own.
 - Connections without a server name, and Encrypted Client Hello, whose outer name `cloudflare-ech.com` is on the bypass list.
 - Ports other than 443, IPv6 destinations, and devices that reach the proxy over IPv6.
 - QUIC. The proxy takes TCP only, so browsers fall back to TCP.
@@ -191,7 +191,7 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 4. In that profile, open Settings, Privacy & Security, Certificates, View Certificates, Authorities, then Import. Choose the file and tick **Trust this CA to identify websites**.
 5. Under Settings, General, Network Settings, choose **Automatic proxy configuration URL**, enter `http://<host>:8088/tls.pac` and tick **Proxy DNS when using SOCKS v5**. The proxy then looks up each name. Otherwise Firefox does it, outside the proxy, and can learn the keys for Encrypted Client Hello, which hide the name from the proxy.
 
-To check it, open a site in that profile and look at its certificate: the issuer is `Mikrokat local CA`.
+To check it, open a site in that profile and look at its certificate: the issuer is `Mikrokat local CA`, or your own CA's name if you uploaded one.
 
 ### Use your own CA
 
@@ -229,7 +229,7 @@ Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if
 - **URLs are written.** For every inspected request Suricata stores the host, URL, content type and user agent. An alert also stores the referrer, redirect target, method, status and length. A password or token in any of those URLs is therefore written. Passwords, cookies and bodies sent in headers or in the body are not written to disk, and `tests/e2e/run.sh` checks that.
 - **Two stores keep those URLs.** EVE follows **Keep logs for** on the Data tab, 1 to 90 days, up to 4 GB. EveBox stays at 7 days and 4 GB whatever is set, so lowering **Keep logs for** does not remove URLs from EveBox.
 - **Root on the host sees the plaintext.** It can capture it on `tzsp0`, up to the copy limit, though nothing stores it.
-- **The CA key can impersonate any site** to every device that trusts it. It stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. If it may have leaked, use **Regenerate the CA**, delete the old `Mikrokat local CA` from every device and import the new certificate. A new CA does not revoke the old one: a device keeps trusting the old key until you delete it there.
+- **The CA key can impersonate any site** to every device that trusts it. The generated key stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. An own CA's key is less closed: it passes through the memory of the web app and waits in `data/tls/incoming` until the proxy takes it (the proxy deletes it from there within seconds, also when it refuses it), and then it sits in `data/tls/private` too. If a generated key may have leaked, use **Regenerate the CA**, delete the old `Mikrokat local CA` from every device and import the new certificate. Regenerate does not apply to an own CA: revoke that CA the way you run it, and upload a new one. A new CA does not revoke the old one: a device keeps trusting the old key until you delete it there.
 - **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** on the Numbers card shows it. Frames can also be lost between the proxy and `tzsp` when the host is overloaded. That loss is not counted there, and `tests/e2e/run.sh` checks for it.
 - **Connections are limited.** The proxy holds at most 512 connections, 128 per device, and closes any over that at once. It closes a connection after 10 minutes with no bytes in either direction, which also ends a quiet websocket, and 60 seconds after one side has finished, so a hostile server cannot hold them open.
 - **Decrypted alerts never block.** They are recorded as `Would block`, also in Block mode. A web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.
@@ -276,7 +276,7 @@ The root certificates the proxy trusts are fixed in its image. To refresh them, 
 docker compose down -v
 ```
 
-Then delete the `data` folder, and remove the rules from the router as shown above. If you used HTTPS inspection, delete `Mikrokat local CA` from every device, and destroy any backup that holds `data/tls/private`: until then that key can impersonate any site to a device that trusts it.
+Then delete the `data` folder, and remove the rules from the router as shown above. If you used HTTPS inspection, delete `Mikrokat local CA` (and your own CA, if you used it for this and nothing else) from every device, and destroy any backup that holds `data/tls/private`: until then that key can impersonate any site to a device that trusts it.
 
 ## Configuration
 
