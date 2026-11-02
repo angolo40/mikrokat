@@ -98,6 +98,7 @@ check_storage() {
 number_ok() { [[ ${2:-} =~ ^[0-9]+$ ]] && [ "$2" -ge "$3" ] || die "$1 must be a number, at least $3. It is: ${2:-}"; }
 
 collect() {
+  step "Reading the answers"
   local first_storage next_id
   next_id=$(pvesh get /cluster/nextid 2>/dev/null || echo 100)
   first_storage=$(pvesm status --content rootdir 2>/dev/null | awk 'NR > 1 && $3 == "active" {print $1; exit}')
