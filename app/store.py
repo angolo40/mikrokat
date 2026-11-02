@@ -202,6 +202,15 @@ def is_decrypted(event):
     return DECRYPTED_VLAN in (vlan if isinstance(vlan, list) else [vlan])
 
 
+TLS_SILENCE = 60  # seconds without a stats.json write before the proxy counts as stopped
+
+
+def tls_running(status=None):
+    """True when the proxy wrote its stats lately. It writes them every 10 seconds, even with the feature off."""
+    at = (tls_status() if status is None else status).get("at")
+    return isinstance(at, (int, float)) and not isinstance(at, bool) and time.time() - at <= TLS_SILENCE
+
+
 def tls_status():
     """Return the counters the TLS proxy wrote, or {} when there are none yet or the file is not valid."""
     value = read_json(os.path.join(TLS_DIR, "state", "stats.json"), {})

@@ -702,13 +702,16 @@ def own_ca_card(stats):
     refused = f'<p class="note error">The CA in use has not changed: {esc(str(stats["ca_import_error"]))}.</p>' if stats.get("ca_import_error") else ""
     stop = ('<div class="actions"><button class="ghost" formaction="/tls/own-ca/remove" onclick="return confirm(\'Stop using your CA? The proxy goes back to the generated CA, and devices then need that one.\')">Stop using my CA</button></div>'
             '<p class="hint">Devices then need the generated CA: download it from this tab and import it.</p>') if own else ""
-    return (f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}'
+    # With the proxy down nothing would take the files, and the key would stay in the folder.
+    off = "" if store.tls_running(stats) else " disabled"
+    silent = ('<p class="note error">The proxy is not running, so an upload would not be processed. Start it, then upload.</p>' if off else "")
+    return (f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}{silent}'
             '<p class="note error">This page is plain HTTP unless you reached it through HTTPS, so the private key crosses the network unencrypted. Upload only from a trusted network.</p>'
-            '<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required>'
+            f'<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required{off}>'
             '<span class="hint">PEM. The signing CA first, then any intermediates, up to the root if you like.</span></label>'
-            '<label class="field"><span>Private key</span><input type="file" name="key" form="own-ca" required>'
+            f'<label class="field"><span>Private key</span><input type="file" name="key" form="own-ca" required{off}>'
             '<span class="hint">PEM and unencrypted, for the first certificate. RSA, ECDSA or Ed25519.</span></label>'
-            f'<div class="actions"><button form="own-ca">Upload</button></div>{stop}</section>')
+            f'<div class="actions"><button form="own-ca"{off}>Upload</button></div>{stop}</section>')
 
 
 def https_card(host, switch, field):
@@ -1210,6 +1213,9 @@ class Handler(BaseHTTPRequestHandler):
         chain, key = fields.get("chain"), fields.get("key")
         if not chain or not key:
             self.reply(settings_page(host, "", "Choose both the certificate chain and the private key.", "https"))
+            return
+        if not store.tls_running():
+            self.reply(settings_page(host, "", "The proxy is not running, so nothing was stored. Start it and upload again.", "https"))
             return
         error = store.upload_ca(chain, key)
         if error:

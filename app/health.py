@@ -14,7 +14,6 @@ RULES_MAX_AGE_DAYS = 8
 DISK_LIMIT = 0.90
 
 
-TLS_SILENCE = 60
 TLS_CA_WARNING_DAYS = 30
 
 
@@ -23,8 +22,7 @@ def tls_problem():
     if not store.settings["tls_enabled"]:
         return None
     status = store.tls_status()
-    at = status.get("at")
-    if not isinstance(at, (int, float)) or isinstance(at, bool) or time.time() - at > TLS_SILENCE:
+    if not store.tls_running(status):
         return "HTTPS inspection has stopped. Devices are browsing without inspection."
     if store.settings["tls_socks"] and status.get("listening") is False:
         error = str(status.get("error") or "no reason given")[:200]

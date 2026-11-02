@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -216,6 +217,7 @@ class Web(Base):
         self.addCleanup(self.server.shutdown)
         self.cookie = f"{web.SESSION_COOKIE}={web.new_session()}"
         self.token = web.csrf_token.encode()
+        self.stats()  # the proxy writes this every 10 seconds, and the upload needs it
 
     def post(self, path, body=b"", content_type=MULTIPART, cookie=None, length=None):
         """Return status, Location and text, with the Content-Length as given when one is."""
@@ -238,10 +240,32 @@ class Web(Base):
 
     def stats(self, **values):
         with open(os.path.join(store.TLS_DIR, "state", "stats.json"), "w") as target:
-            json.dump({"at": 1, **values}, target)
+            json.dump({"at": int(time.time()), **values}, target)
 
 
 class OwnCaUpload(Web):
+    def test_proxy_not_running_stores_nothing(self):
+        # With the proxy down the key would stay in incoming, and the page would say it was deleted.
+        silent = [None, {"at": int(time.time()) - store.TLS_SILENCE - 5}, {"at": "soon"}, {"at": True}, {"at": None}, {}, []]
+        os.remove(os.path.join(store.TLS_DIR, "state", "stats.json"))
+        for stats in silent:
+            with self.subTest(stats=stats):
+                if stats is not None:
+                    with open(os.path.join(store.TLS_DIR, "state", "stats.json"), "w") as target:
+                        json.dump(stats, target)
+                status, location, text = self.upload()
+                self.assertEqual(status, 200)
+                self.assertIn("The proxy is not running, so nothing was stored. Start it and upload again.", text)
+                self.assertEqual(self.incoming(), [])
+        with open(os.path.join(store.TLS_DIR, "state", "stats.json"), "w") as target:
+            target.write("{broken")
+        self.assertIn("The proxy is not running", self.upload()[2])
+        self.assertEqual(self.incoming(), [])
+
+    def test_proxy_running_takes_the_upload(self):
+        self.stats(at=int(time.time()) - store.TLS_SILENCE + 5)
+        self.assertEqual(self.upload()[0], 303)
+
     def test_writes_both_files(self):
         status, location, _ = self.upload()
         self.assertEqual((status, location), (303, "/settings?ok=ca-uploaded&tab=https"))
@@ -480,6 +504,22 @@ class OwnCaTab(Web):
         self.assertTrue(any(c.get("name") == "token" and c.get("value") == web.csrf_token for c in mine))
         self.assertTrue(any(c["tag"] == "button" for c in mine))
         self.assertFalse([c for c in parser.controls if c.get("type") == "file" and c["owner"] != owner])
+
+    def test_upload_is_off_while_the_proxy_is_silent(self):
+        for values in ({"at": 1}, {"at": "soon"}):
+            self.stats(**values)
+            page = self.page()
+            self.assertIn("The proxy is not running", page)
+            parser = self.forms()
+            mine = [c for c in parser.controls if c.get("name") in ("chain", "key") or (c["tag"] == "button" and c.get("form") == "own-ca")]
+            self.assertTrue(mine)
+            self.assertTrue(all("disabled" in c for c in mine), mine)
+
+    def test_upload_is_on_while_the_proxy_runs(self):
+        self.stats(ca_own=False)
+        page = self.page()
+        self.assertNotIn("The proxy is not running", page)
+        self.assertTrue(all("disabled" not in c for c in self.forms().controls if c.get("name") in ("chain", "key")))
 
     def test_warns_that_the_key_crosses_the_network(self):
         page = self.page()
