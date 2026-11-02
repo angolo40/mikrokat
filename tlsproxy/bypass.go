@@ -154,6 +154,14 @@ func (b *Bypass) Completed(device, name string, now time.Time) {
 	remember(b.good, k, now.Add(goodTTL).Unix(), maxMemory, now)
 }
 
+// ForgetGood drops what devices accepted so far. It is called when the CA
+// changes: a handshake with the old CA says nothing about the new one.
+func (b *Bypass) ForgetGood() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.good = make(map[autoKey]int64)
+}
+
 // remember stores until for k in m, which holds at most limit keys.
 func remember(m map[autoKey]int64, k autoKey, until int64, limit int, now time.Time) {
 	if _, exists := m[k]; !exists && len(m) >= limit {

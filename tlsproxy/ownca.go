@@ -297,6 +297,7 @@ func (s *Server) pollOwn() {
 		if s.caOwn {
 			s.caOwn, s.ownSeen, s.ownNews = false, "", true
 			s.Engine.CA.Store(nil)
+			s.Engine.Bypass.ForgetGood()
 			s.Engine.Stats.SetCA(false, "", 0, 0)
 		}
 	}
@@ -493,11 +494,13 @@ func (s *Server) loadOwn() error {
 	if err != nil {
 		s.ownSeen = ""
 		s.Engine.CA.Store(nil)
+		s.Engine.Bypass.ForgetGood()
 		s.Engine.Stats.SetCA(true, "", 0, 0)
 		return fmt.Errorf("own CA: %w", err)
 	}
 	s.ownSeen, s.ownNews = stamp, true
 	s.Engine.CA.Store(ca)
+	s.Engine.Bypass.ForgetGood()
 	s.Engine.Stats.SetCA(true, ca.cert.Subject.String(), len(ca.chain), ca.expires.Unix())
 	log.Printf("own CA loaded: %q, %d in the chain", ca.cert.Subject.String(), len(ca.chain))
 	return nil

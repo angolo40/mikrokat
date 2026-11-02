@@ -266,6 +266,7 @@ func (s *Server) loadCA(generation int) error {
 		return err
 	}
 	s.Engine.CA.Store(ca)
+	s.Engine.Bypass.ForgetGood()
 	s.Engine.Stats.SetCA(false, ca.cert.Subject.String(), 1, ca.cert.NotAfter.Unix())
 	s.caGen = generation
 	log.Printf("CA generation %d loaded", generation)

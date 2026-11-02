@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/asn1"
 	"encoding/pem"
@@ -157,5 +158,22 @@ func TestReadOwnFileRefusesLinkAndHugeFile(t *testing.T) {
 	}
 	if data, err := readOwnFile(real); err != nil || string(data) != "x" {
 		t.Errorf("a regular file was not read: %q %v", data, err)
+	}
+}
+
+// What a device accepted from one CA says nothing about the next: a pinned app
+// outside the name constraints of a new CA must still be found.
+func TestChangingTheCAForgetsGoodHandshakes(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	now := r.Engine.now()
+	r.Engine.Bypass.Completed("dev", "site.example", now)
+	ca := makeCA(t, "Own CA", ecKey(t, elliptic.P256()), nil)
+	r.upload(t, ca.pem, pkcs8(t, ca.key))
+	r.Apply(r.cfg)
+	r.Engine.Bypass.Failed("dev", "site.example", now)
+	r.Engine.Bypass.Failed("dev", "site.example", now.Add(time.Second))
+	if got := r.Engine.Bypass.Match("dev", "site.example", now.Add(time.Second)); got != "auto_bypass" {
+		t.Fatalf("a handshake with the old CA still counts: %q", got)
 	}
 }
