@@ -2,6 +2,8 @@ package main
 
 import (
 	_ "embed"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,29 @@ var builtinText string
 
 // BuiltinBypass is the built-in list of names the proxy never decrypts.
 var BuiltinBypass = parseList(builtinText)
+
+// alwaysBypass stays in the list when the owner's list replaces the built-in
+// one: it is what makes Encrypted Client Hello work, and no owner chooses it.
+const alwaysBypass = "cloudflare-ech.com"
+
+// defaultsFile is where the proxy leaves its built-in names for the app to show.
+const defaultsFile = "bypass-defaults.txt"
+
+// writeBypassDefaults writes the names of a built-in list, one per line and
+// without comments, so the page can show them for the owner to edit.
+// alwaysBypass is left out, because it cannot be removed.
+func writeBypassDefaults(dir, text string) error {
+	var out strings.Builder
+	for _, name := range parseList(text) {
+		if name != alwaysBypass {
+			out.WriteString(name + "\n")
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, defaultsFile), []byte(out.String()), 0o644)
+}
 
 // parseList reads one suffix per line, ignoring blanks and # comments.
 func parseList(text string) []string {
@@ -56,6 +81,7 @@ type Bypass struct {
 	mu       sync.Mutex
 	builtin  []string
 	own      []string
+	custom   bool              // only the owner's list counts, plus alwaysBypass
 	auto     map[autoKey]int64 // expiry, Unix seconds
 	removals map[autoKey]int64 // latest removal time, Unix seconds
 	fails    map[autoKey]int64 // when the last failure stops counting, Unix seconds
@@ -91,6 +117,13 @@ func (b *Bypass) SetOwn(names []string) {
 	b.mu.Unlock()
 }
 
+// SetCustom chooses whether the owner's list replaces the built-in one.
+func (b *Bypass) SetCustom(custom bool) {
+	b.mu.Lock()
+	b.custom = custom
+	b.mu.Unlock()
+}
+
 func suffixMatch(list []string, name string) bool {
 	for _, s := range list {
 		if name == s || strings.HasSuffix(name, "."+s) {
@@ -106,7 +139,7 @@ func (b *Bypass) Match(device, name string, now time.Time) string {
 	k := newAutoKey(device, name)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if suffixMatch(b.builtin, k.name) || suffixMatch(b.own, k.name) {
+	if suffixMatch(b.own, k.name) || k.name == alwaysBypass || strings.HasSuffix(k.name, "."+alwaysBypass) || (!b.custom && suffixMatch(b.builtin, k.name)) {
 		return "bypass"
 	}
 	if b.auto[k] > now.Unix() {

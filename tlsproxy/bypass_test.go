@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -251,6 +254,78 @@ func TestParseList(t *testing.T) {
 	want := []string{"example.com", "foo.org"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v", got)
+	}
+}
+
+func TestBuiltinSkipsGoogle(t *testing.T) {
+	b := NewBypass(BuiltinBypass)
+	for _, name := range []string{"www.google.com", "www.google.it", "www.google.ch", "fonts.gstatic.com", "www.youtube.com", "www.recaptcha.net", "maps.googleapis.com"} {
+		if got := b.Match("d", name, t0); got != "bypass" {
+			t.Errorf("%s: got %q", name, got)
+		}
+	}
+	if got := b.Match("d", "notgoogle.com", t0); got == "bypass" {
+		t.Error("a name that only ends in google.com matched")
+	}
+}
+
+func TestCustomListReplacesTheDefaults(t *testing.T) {
+	b := NewBypass(BuiltinBypass)
+	b.SetOwn([]string{"example.org"})
+	if got := b.Match("d", "www.google.com", t0); got != "bypass" {
+		t.Fatalf("a default does not match before: %q", got)
+	}
+	b.SetCustom(true)
+	for name, want := range map[string]string{
+		"www.google.com": "", "www.paypal.com": "", // removed from the list, so decrypted
+		"www.example.org": "bypass", "cloudflare-ech.com": "bypass", // the owner's, and the one that stays
+	} {
+		if got := b.Match("d", name, t0); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
+	}
+	b.SetCustom(false)
+	if got := b.Match("d", "www.google.com", t0); got != "bypass" {
+		t.Errorf("back to the defaults: %q", got)
+	}
+}
+
+func TestDefaultsFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeBypassDefaults(dir, "# note\ncloudflare-ech.com\nGoogle.com\n\nbank.example\n"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "bypass-defaults.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "google.com\nbank.example\n" {
+		t.Fatalf("file %q", raw)
+	}
+	if err := writeBypassDefaults(dir, builtinText); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(filepath.Join(dir, "bypass-defaults.txt"))
+	if strings.Contains(string(raw), "#") || strings.Contains(string(raw), "cloudflare-ech.com") || !strings.Contains(string(raw), "paypal.com\n") {
+		t.Fatalf("file %q", raw)
+	}
+}
+
+func TestServerAppliesTheCustomFlag(t *testing.T) {
+	r := newOwnRig(t)
+	r.cfg.Bypass = []string{"example.org"}
+	r.Apply(r.cfg)
+	e := r.Engine
+	e.Bypass.mu.Lock()
+	e.Bypass.builtin = []string{"paypal.com"}
+	e.Bypass.mu.Unlock()
+	if got := e.Bypass.Match("d", "paypal.com", t0); got != "bypass" {
+		t.Fatalf("got %q", got)
+	}
+	r.cfg.BypassCustom = true
+	r.Apply(r.cfg)
+	if got := e.Bypass.Match("d", "paypal.com", t0); got != "" {
+		t.Fatalf("a removed default still matches: %q", got)
 	}
 }
 

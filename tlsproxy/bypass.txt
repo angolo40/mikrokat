@@ -16,6 +16,15 @@ aus5.mozilla.org
 versioncheck.addons.mozilla.org
 update.googleapis.com
 
+# Bot protection: these sites show a CAPTCHA to a proxy
+google.com
+google.it
+google.ch
+gstatic.com
+googleapis.com
+recaptcha.net
+youtube.com
+
 # Banks and payments, Italy
 intesasanpaolo.com
 unicredit.it

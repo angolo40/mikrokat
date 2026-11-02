@@ -38,6 +38,9 @@ func main() {
 	}
 	go emitter.Run()
 
+	if err := writeBypassDefaults(stateDir, builtinText); err != nil {
+		log.Printf("bypass defaults: %v", err)
+	}
 	bypass := NewBypass(BuiltinBypass)
 	server := NewServer(&Engine{
 		CA:      new(atomic.Pointer[CA]),

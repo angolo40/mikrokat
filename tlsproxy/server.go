@@ -170,6 +170,7 @@ func (s *Server) Apply(cfg Config) bool {
 	defer s.mu.Unlock()
 	s.cfg = cfg
 	s.Engine.Bypass.SetOwn(cfg.Bypass)
+	s.Engine.Bypass.SetCustom(cfg.BypassCustom)
 	s.Engine.Bypass.Apply(cfg.AutoRemove)
 	s.readInterfaces()
 	s.pollOwn()
