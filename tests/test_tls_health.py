@@ -118,6 +118,28 @@ class Health(Base):
         self.write(time.time() - 5, ca_expires=time.time() - 60)
         self.assertIn("has expired", health.ca_problem())
 
+    def test_own_ca_close_to_expiry_asks_for_an_upload(self):
+        store.settings["tls_enabled"] = True
+        self.write(time.time() - 5, ca_own=True, ca_expires=time.time() + 29 * 86400)
+        problem = health.ca_problem()
+        self.assertIn("expires in", problem)
+        self.assertIn("Upload", problem)
+        self.assertNotIn("Regenerate", problem)
+
+    def test_own_ca_expired_asks_for_an_upload(self):
+        store.settings["tls_enabled"] = True
+        self.write(time.time() - 5, ca_own=True, ca_expires=time.time() - 60)
+        problem = health.ca_problem()
+        self.assertIn("has expired", problem)
+        self.assertIn("Upload", problem)
+        self.assertNotIn("Regenerate", problem)
+
+    def test_own_ca_that_cannot_load_fires_the_port_alarm(self):
+        store.settings["tls_enabled"] = True
+        self.write(time.time() - 5, ca_own=True, ca_expires=0, listening=False, error="CA failed: own CA: the key does not match the first certificate")
+        self.assertIn("the key does not match", health.tls_problem())
+        self.assertIsNone(health.ca_problem())
+
     def test_no_ca_yet(self):
         store.settings["tls_enabled"] = True
         for value in (0, None, "soon", True):

@@ -36,15 +36,17 @@ def ca_problem():
     """Devices stop being inspected when the CA runs out, so warn while there is time to replace it."""
     if not store.settings["tls_enabled"]:
         return None
-    expires = store.tls_status().get("ca_expires")
+    status = store.tls_status()
+    expires = status.get("ca_expires")
     if not isinstance(expires, (int, float)) or isinstance(expires, bool) or not expires:
         return None
     left = expires - time.time()
     if left >= TLS_CA_WARNING_DAYS * 86400:
         return None
+    fix = "Upload a new CA on the HTTPS inspection tab." if status.get("ca_own") is True else "Press Regenerate the CA and import it on every device."
     if left <= 0:
-        return "The HTTPS inspection CA has expired, so sites are no longer inspected. Press Regenerate the CA and import it on every device."
-    return f"The HTTPS inspection CA expires in {int(left // 86400)} days. Press Regenerate the CA and import it on every device."
+        return f"The HTTPS inspection CA has expired, so sites are no longer inspected. {fix}"
+    return f"The HTTPS inspection CA expires in {int(left // 86400)} days. {fix}"
 
 
 def check():
