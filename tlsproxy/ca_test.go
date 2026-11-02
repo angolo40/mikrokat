@@ -18,6 +18,10 @@ import (
 	"time"
 )
 
+func sameKey(a, b *CA) bool {
+	return a.key.Public().(*ecdsa.PublicKey).Equal(b.key.Public())
+}
+
 func TestCreateThenReload(t *testing.T) {
 	priv, state := t.TempDir(), t.TempDir()
 	a, err := LoadCA(priv, state, 1)
@@ -28,7 +32,7 @@ func TestCreateThenReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !a.key.PublicKey.Equal(&b.key.PublicKey) {
+	if !sameKey(a, b) {
 		t.Fatal("reload changed the key")
 	}
 	st, err := os.Stat(filepath.Join(priv, "ca.key"))
@@ -59,7 +63,7 @@ func TestGenerationReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	pem2, _ := os.ReadFile(filepath.Join(state, "ca.pem"))
-	if a.key.PublicKey.Equal(&b.key.PublicKey) {
+	if sameKey(a, b) {
 		t.Fatal("generation 2 kept the key")
 	}
 	if string(pem1) == string(pem2) {
@@ -241,7 +245,7 @@ func TestWideKeyModeTightened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !a.key.PublicKey.Equal(&b.key.PublicKey) {
+	if !sameKey(a, b) {
 		t.Fatal("pair was replaced")
 	}
 	st, _ := os.Stat(keyPath)

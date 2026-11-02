@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -33,8 +34,9 @@ const (
 // shown to devices. Its key can impersonate any site, so it lives only in the
 // private directory.
 type CA struct {
-	key  *ecdsa.PrivateKey
-	cert *x509.Certificate
+	key   crypto.Signer
+	cert  *x509.Certificate
+	chain [][]byte // sent after each leaf, for an uploaded CA
 
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate
@@ -44,14 +46,7 @@ type CA struct {
 // (ca.pem), creating it when missing. A different generation, or any file
 // that is unreadable or does not match the others, replaces the whole pair.
 func LoadCA(privateDir, stateDir string, generation int) (*CA, error) {
-	if err := os.MkdirAll(privateDir, 0o700); err != nil {
-		return nil, err
-	}
-	// MkdirAll leaves a folder that already exists as it is.
-	if err := os.Chmod(privateDir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := prepareDirs(privateDir, stateDir); err != nil {
 		return nil, err
 	}
 	keyPath := filepath.Join(privateDir, "ca.key")
@@ -132,7 +127,19 @@ func LoadCA(privateDir, stateDir string, generation int) (*CA, error) {
 	return newCA(key, cert), nil
 }
 
-func newCA(key *ecdsa.PrivateKey, cert *x509.Certificate) *CA {
+// prepareDirs makes the two folders of a CA, the private one closed to others.
+func prepareDirs(privateDir, stateDir string) error {
+	if err := os.MkdirAll(privateDir, 0o700); err != nil {
+		return err
+	}
+	// MkdirAll leaves a folder that already exists as it is.
+	if err := os.Chmod(privateDir, 0o700); err != nil {
+		return err
+	}
+	return os.MkdirAll(stateDir, 0o755)
+}
+
+func newCA(key crypto.Signer, cert *x509.Certificate) *CA {
 	return &CA{key: key, cert: cert, cache: map[string]*tls.Certificate{}}
 }
 
@@ -189,8 +196,13 @@ func readCA(keyPath, genPath, pemPath string, generation int) (*ecdsa.PrivateKey
 }
 
 // Leaf returns a certificate for name signed by the CA, from memory when one
-// with at least a day left is cached. Safe for concurrent use.
+// with at least a day left is cached. Safe for concurrent use. There is no CA
+// for a moment when an own CA goes away under a connection that is past its
+// checks, so a nil c is an error too.
 func (c *CA) Leaf(name string) (*tls.Certificate, error) {
+	if c == nil {
+		return nil, errors.New("no CA loaded")
+	}
 	if name == "" || len(name) > maxNameLength {
 		return nil, fmt.Errorf("invalid server name length %d", len(name))
 	}
@@ -237,7 +249,7 @@ func (c *CA) Leaf(name string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: parsed}
+	l := &tls.Certificate{Certificate: append([][]byte{der}, c.chain...), PrivateKey: key, Leaf: parsed}
 	if len(c.cache) >= leafCacheMax {
 		c.cache = map[string]*tls.Certificate{}
 	}
