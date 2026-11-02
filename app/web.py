@@ -541,7 +541,7 @@ PASSED_REASONS = {
     "bypass": "Name on the skip list",
     "auto_bypass": "Skipped automatically after a refusal",
     "ca_expired": "The CA has expired",
-    "upstream": "The site's certificate failed the checks",
+    "upstream": "The certificate of the site failed the checks",
 }
 REFUSED_REASONS = {
     "not_listed": "Not on the device list",

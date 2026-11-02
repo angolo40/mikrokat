@@ -152,6 +152,7 @@ To remove everything from the router:
 | **Blocked** | The block list: block and unblock by hand, in any mode |
 | **Rules** | Turn rules off, add your own, apply updates |
 | **Allowlist** | Addresses that are never blocked or reported |
+| **Connections** | With HTTPS inspection on: what the proxy did with each connection, with statistics for the last 24 hours |
 | **Settings** | Protection, notifications, router, data, HTTPS inspection and account |
 | **Events** | EveBox, on port 5636 |
 
@@ -234,6 +235,18 @@ The pending key is `data/tls/private/own-ca-request.key`, mode 600. Only the req
 `/tls.pac` tells a browser where to send its traffic, and it needs no login. While the feature is on, it answers `SOCKS5 <host>:1080; DIRECT` for `https:` and `wss:` addresses, which means use the proxy, or go direct if the proxy does not answer. Everything else goes direct: other schemes, plain host names and private addresses. The proxy inspects none of that, and relaying it would only hide the real device. While the feature is off, the file answers `DIRECT`.
 
 Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if they trust the CA. Through it, a listed device reaches public sites only, with the address of the Mikrokat host. The proxy refuses private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), the CGNAT range 100.64/10, loopback and link-local addresses, the addresses of the host and the subnets of its Docker networks, and it does so also for a name that resolves to one of them. There is no allow-list, so an HTTPS site on your LAN with a full name, such as `nas.home.example`, fails in a browser using the PAC file. Open it from another profile.
+
+### Connections
+
+The **Connections** page, in the menu while HTTPS inspection is on, shows what went through the proxy and what it did with it: how many connections were inspected and how many were passed untouched, and why; the data moved; the top sites and devices; and the latest 200 connections, which you can filter by device and by part of a site name. The Overview has a **Decrypted, 24h** tile that opens it. The numbers are for the last 24 hours, with a 7 day total under them.
+
+It comes from a log the proxy writes, `data/tls/state/connections.jsonl`, with one line for each connection: when it ended, the device, the site name (the name in the TLS hello, else the name the device asked SOCKS for), the address and port, whether it was inspected, passed or refused and why, the bytes each way and how long it lasted. Bytes are those relayed, not the copy sent to Suricata. **No URL, path, header or content is ever written there.** A connection that fails before any relay starts, such as one the site did not answer, is not logged. Refused connections are written at most once a second for each source, so a port scan cannot fill the file; the rest are counted as `log_skipped` in `stats.json`. If the writer cannot keep up, lines are dropped and counted as `log_dropped`.
+
+The file is rotated at 5 MiB to `connections.jsonl.1`, so the log holds at most about 10 MiB. The app reads new lines every 30 seconds into hourly statistics that it keeps for 7 days, at most the 200 biggest sites for each hour.
+
+It only shows traffic through the proxy, from the devices on your list. It says nothing about the rest of the network, and nothing about what a program does inside a connection it passed untouched.
+
+The log shows which sites each listed device visited, so the consent note above applies to it too. **Keep a log of connections** on the HTTPS inspection tab turns it off (on by default): the proxy then writes nothing, the page empties as the 24 hours pass, and the existing file stays until you delete it.
 
 ### Limits
 

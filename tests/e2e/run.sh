@@ -486,6 +486,54 @@ own_ca() {
   return 0
 }
 
+connections_page_has() {
+  curl -s -b "$E2E_WORK/cookies" "$APP/connections" | grep -qE "$1"
+}
+
+log_has() {
+  grep -qE "$1" data/tls/state/connections.jsonl 2>/dev/null
+}
+
+# The traffic of the checks above is in the log and on the Connections page, and the log holds no URL.
+connections_checks() {
+  check "Connection log"
+  local log=data/tls/state/connections.jsonl
+  [ -s "$log" ] || fail "the proxy wrote no $log"
+  [ "$(stat -c %a "$log")" = 644 ] || fail "$log has mode $(stat -c %a "$log")"
+  log_has '"name":"test.example.net".*"action":"inspected"' || fail "no inspected line for test.example.net"
+  log_has '"name":"bad.example.net".*"action":"relayed","reason":"upstream"' || fail "no relayed line, reason upstream, for bad.example.net"
+  log_has '"name":"pinned.example.net".*"reason":"auto_bypass"' || fail "no auto_bypass line for pinned.example.net"
+  log_has '"action":"refused","reason":"destination"' || fail "no refused line, reason destination"
+  log_has '"action":"refused","reason":"not_listed"' || fail "no refused line, reason not_listed"
+  # The requests above had these in the path, the query, a header and a body.
+  if grep -E "mikrokat-e2e|$URL_TOKEN|$COOKIE|$POST_BODY|GET |POST |Cookie|HTTP/1" "$log" >"$E2E_WORK/found"; then
+    fail "the log holds request content: $(head -c 300 "$E2E_WORK/found")"
+  fi
+  [ "$(json_get log_dropped <data/tls/state/stats.json)" = 0 ] || fail "log_dropped is not 0"
+
+  check "Connections page"
+  # The app reads the log every 30 seconds.
+  wait_for 90 connections_page_has '<b>[1-9][0-9 ]*</b><span>Connections, 24h' || fail "the page shows no connections after 90 seconds"
+  local page
+  page=$(curl -s -b "$E2E_WORK/cookies" "$APP/connections")
+  for text in test.example.net bad.example.net "The certificate of the site failed the checks" "Skipped automatically after a refusal" \
+              "Not on the device list" "Destination not allowed" "Inspected" 'class="legend"'; do
+    grep -qF "$text" <<<"$page" || fail "the page does not show: $text"
+  done
+  grep -q 'mikrokat-e2e' <<<"$page" && fail "the page shows a path"
+  grep -qE '<a href="/connections"( class=on)?>Connections</a>' <<<"$page" || fail "no Connections item in the menu"
+  curl -s -o /dev/null -w '%{redirect_url}' "$APP/connections" | grep -q /login || fail "the page needs no login"
+  connections_browser
+}
+
+connections_browser() {
+  have_browser || { echo "no Docker image for the browser check, skipping it"; return 0; }
+  mkdir -p "$E2E_WORK/pw"
+  MK_PASSWORD=$(sed -n 's/^WEB_PASSWORD=//p' .env | tr -d '\n')
+  export MK_PASSWORD
+  browser connections
+}
+
 checks() {
   check "Sign in"
   sign_in
@@ -592,6 +640,8 @@ checks() {
   code=$?
   [ "$code" != 0 ] || fail "the connection was served"
   wait_for 15 counter_above refused "$before" || fail "refused did not grow"
+
+  connections_checks
 
   own_ca_request
   own_ca

@@ -5,6 +5,7 @@
 //
 //   node browser.mjs request   tabs, then switch on, create a request, sign it, upload the certificate alone
 //   node browser.mjs pair      the older upload of certificate and key together, then Stop using my CA
+//   node browser.mjs connections   the Connections page after real traffic: bars, tiles, tables, filters, dark and light
 //   node browser.mjs names     the Known devices list of a rendered page with 38 names (NAMES_HTML)
 //
 // APP, MK_PASSWORD and OUT (where the downloads and the screenshots go) come from the environment.
@@ -210,8 +211,94 @@ async function names(page) {
   await shot(page, 'known-devices');
 }
 
+const rgb = (text) => (text.match(/[\d.]+/g) ?? []).slice(0, 3).join(',');
+
+async function connections(page) {
+  await signIn(page);
+  step('the Connections item is in the menu, and the Overview tile opens the page');
+  await page.goto(`${APP}/`);
+  await shown(page.locator('nav a:has-text("Connections")'), 'the Connections menu item');
+  const tile = page.locator('a.tile:has-text("Decrypted, 24h")');
+  await shown(tile, 'the Decrypted, 24h tile on Overview');
+  await shot(page, 'overview-tile');
+  await Promise.all([page.waitForURL(`${APP}/connections`), tile.click()]);
+  await shown(page.locator('h1:has-text("Connections")'), 'the Connections heading');
+
+  step('the tiles show data');
+  for (const label of ['Connections, 24h', 'Inspected share', 'Passed share', 'Data through the proxy']) {
+    const t = page.locator(`.tile:has-text("${label}")`);
+    await shown(t, `the ${label} tile`);
+    const value = (await t.locator('b').textContent()).trim();
+    if (!value || /^(0|0%|0 B)$/.test(value)) fail(`the ${label} tile shows ${value}`);
+  }
+
+  step('the chart has bars of both series, a legend, and is really drawn');
+  const chart = page.locator('section.panel:has(h2:has-text("Connections per hour")) svg').first();
+  await shown(chart, 'the chart');
+  const box = await chart.boundingBox();
+  if (!box || box.width < 200 || box.height < 80) fail(`the chart is ${JSON.stringify(box)}`);
+  for (const series of ['bar-1', 'bar-2']) {
+    const bars = chart.locator(`path.${series}`);
+    if ((await bars.count()) === 0) fail(`the chart has no ${series} bars`);
+    await shown(bars, `a ${series} bar`);
+    const b = await bars.first().boundingBox();
+    if (!b || b.height < 1 || b.width < 3) fail(`a ${series} bar is ${JSON.stringify(b)}`);
+  }
+  await shown(page.locator('.legend:has-text("Inspected"):has-text("Passed")'), 'the legend');
+
+  step('the tables show the traffic');
+  for (const title of ['Why connections passed', 'Top sites by connections', 'Top sites by data', 'Data per device', 'Recent connections']) {
+    const panel = page.locator(`section.panel:has(h2:has-text("${title}"))`);
+    await shown(panel, title);
+    await shown(panel.locator('tr td').first(), `a row of ${title}`);
+  }
+  const rows = page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)');
+  const all = await rows.count();
+  if (all < 3) fail(`only ${all} recent connections`);
+  const text = await rows.allTextContents();
+  for (const expected of ['test.example.net', 'bad.example.net', 'Refused']) if (!text.some((t) => t.includes(expected))) fail(`no recent row with ${expected}`);
+  await shot(page, 'connections-light');
+
+  step('the filters narrow the list');
+  await page.selectOption('select[name=device]', '127.0.0.1');
+  await Promise.all([page.waitForURL(/device=127.0.0.1/), page.click('.filters button')]);
+  const byDevice = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
+  if (!byDevice.length || byDevice.length >= all) fail(`the device filter left ${byDevice.length} of ${all} rows`);
+  if (byDevice.some((t) => t.includes('Refused: Not on the device list'))) fail('the device filter kept a row of another device');
+  await page.fill('input[name=site]', 'bad.example');
+  await Promise.all([page.waitForURL(/site=bad.example/), page.click('.filters button')]);
+  const bySite = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
+  if (!bySite.length || bySite.some((t) => !t.includes('bad.example.net'))) fail(`the site filter left ${JSON.stringify(bySite)}`);
+  await shot(page, 'connections-filtered');
+  await page.fill('input[name=site]', 'no-such-site.invalid');
+  await Promise.all([page.waitForURL(/no-such-site/), page.click('.filters button')]);
+  await shown(page.locator('text=Nothing matches these filters'), 'the empty filter result');
+  await page.goto(`${APP}/connections`);
+
+  step('dark and light: the bars are drawn in a colour that is not the background');
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const seen = await page.evaluate(() => {
+      const fill = (sel) => getComputedStyle(document.querySelector(sel)).fill;
+      return { one: fill('section.panel svg path.bar-1'), two: fill('section.panel svg path.bar-2'), page: getComputedStyle(document.body).backgroundColor,
+               card: getComputedStyle(document.querySelector('section.panel')).backgroundColor };
+    });
+    if (rgb(seen.one) === rgb(seen.card) || rgb(seen.two) === rgb(seen.card) || rgb(seen.one) === rgb(seen.two)) fail(`${scheme}: the bars are ${JSON.stringify(seen)}`);
+    if (scheme === 'dark' && rgb(seen.page) === '252,252,251') fail('dark mode kept the light page');
+    await shot(page, `connections-${scheme}`);
+  }
+  await page.emulateMedia({ colorScheme: null });
+
+  step('a narrow screen has no sideways scroll on the page');
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto(`${APP}/connections`);
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  if (wide) fail('the page scrolls sideways on a phone');
+  await shot(page, 'connections-phone');
+}
+
 const phase = process.argv[2];
-const phases = { request, pair, names };
+const phases = { request, pair, names, connections };
 if (!phases[phase]) { console.error(`usage: browser.mjs ${Object.keys(phases).join('|')}`); process.exit(2); }
 const browser = await chromium.launch();
 let code = 0;
