@@ -27,6 +27,7 @@ SETTLE=14 # dump-counters lagged by 10.6 seconds at most, and stats.json is writ
 COMPOSE=(docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml)
 
 export E2E_WORK=
+E2E_SHOTS=${E2E_SHOTS:-}
 CHECK=Setup
 RESULT="FAIL: stopped early"
 SERVER_PID=
@@ -220,9 +221,15 @@ make_own_ca() {
   ) 2>/dev/null || fail "no private CA"
 }
 
+# upload_signed <certificate>: what the Upload signed certificate button sends, with no key.
+upload_signed() {
+  curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" -F "token=$(form_token)" -F "chain=@$1" "$APP/tls/own-ca"
+}
+
 # A request, not a delete: the proxy also puts ca.pem back. What a failed run left waiting goes too.
+# A pending key goes as well. Its counters in private stay, or a proxy that starts again would make a new one.
 drop_own_ca() {
-  rm -f data/tls/incoming/own-ca.* 2>/dev/null
+  rm -f data/tls/incoming/own-ca.* data/tls/private/own-ca-request.key data/tls/state/own-ca.csr 2>/dev/null
   touch data/tls/incoming/remove-own-ca 2>/dev/null
 }
 
@@ -316,6 +323,118 @@ measure() {
 
   counted $((FETCHES * BURST)) full_queue
   echo "Full queue: $mbps Mbps, peak $(peak_mb) MB, $(ram) after. Frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
+}
+
+# The request flow through the real routes: the proxy makes the key, the owner signs outside, the certificate
+# arrives alone. A client that trusts only the root must then verify the leaves.
+own_ca_request() {
+  check "Own CA request"
+  make_own_ca
+  local next name="Mikrokat E2E request CA" page work="$E2E_WORK/request"
+  mkdir -p "$work"
+  page=$(tab)
+  grep -q 'name="ca_request_name" form="own-ca-request"' <<<"$page" || fail "no name field for a request"
+  # The app refuses it itself while the stats say nothing is pending, and writes nothing.
+  curl -sS -b "$E2E_WORK/cookies" -F "token=$(form_token)" -F "chain=@$E2E_WORK/own-chain.pem" "$APP/tls/own-ca" | grep -q "No request is pending. Create a request, or upload the key too." || fail "a certificate with no request was not refused by the page"
+  incoming_empty || fail "data/tls/incoming still holds $(ls -A data/tls/incoming)"
+  next=$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" --data-urlencode "token=$(form_token)" --data-urlencode "ca_request_name=$name" "$APP/tls/own-ca/request")
+  [ "$next" = "$APP/settings?ok=ca-requested&tab=https" ] || fail "the request went to '$next'"
+  wait_for 15 request_pending || fail "the proxy made no request"
+  [ "$(stat -c %a data/tls/private/own-ca-request.key)" = 600 ] || fail "the pending key has mode $(stat -c %a data/tls/private/own-ca-request.key)"
+  [ "$(counter ca_request_name)" = "\"$name\"" ] || fail "ca_request_name is $(counter ca_request_name)"
+  curl -sf -b "$E2E_WORK/cookies" -o "$work/mikrokat-ca.csr" "$APP/tls/own-ca.csr" || fail "no request to download"
+  curl -sf -b "$E2E_WORK/cookies" -o "$work/mikrokat-ca.ext" "$APP/tls/own-ca.ext" || fail "no extensions to download"
+  curl -s -o /dev/null -w '%{http_code}' "$APP/tls/own-ca.csr" | grep -q 303 || fail "the request download needs no login"
+  grep -q "openssl x509 -req -in mikrokat-ca.csr -CA root.crt -CAkey root.key -CAcreateserial -days 365 -sha256 -extfile mikrokat-ca.ext -out mikrokat-ca.pem" <(tab) || fail "the tab shows no signing command"
+  cp "$E2E_WORK/own-root.pem" "$work/root.crt"
+  cp "$E2E_WORK/own-root.key" "$work/root.key"
+  (cd "$work" && openssl x509 -req -in mikrokat-ca.csr -CA root.crt -CAkey root.key -CAcreateserial -days 365 -sha256 -extfile mikrokat-ca.ext -out mikrokat-ca.pem) 2>/dev/null || fail "openssl could not sign the request"
+  cat "$work/mikrokat-ca.pem" "$work/root.crt" >"$work/chain.pem"
+  # A certificate for some other key is refused, and the pending key stays.
+  next=$(upload_signed "$E2E_WORK/own-chain.pem")
+  wait_for 15 import_error_says "not signed for the pending request" || fail "another certificate: '$(counter ca_import_error)'"
+  request_pending || fail "the pending key went with a refused certificate"
+  next=$(upload_signed "$work/chain.pem")
+  [ "$next" = "$APP/settings?ok=ca-uploaded&tab=https" ] || fail "the upload went to '$next'"
+  wait_for 15 own_says true || fail "the proxy did not take it: $(counter ca_import_error)"
+  wait_for 15 request_gone || fail "the request stayed"
+  incoming_empty || fail "data/tls/incoming still holds $(ls -A data/tls/incoming)"
+  [ "$(counter ca_import_error)" = '""' ] || fail "an error stayed: $(counter ca_import_error)"
+  fetch_signed_by "$work/root.crt" "$name"
+  [ "$(counter ca_chain)" = 2 ] || fail "ca_chain is $(counter ca_chain)"
+  [ ! -e data/tls/private/own-ca-request.key ] && [ ! -e data/tls/state/own-ca.csr ] || fail "the pending files stayed"
+  grep -rl "PRIVATE KEY" data/tls/state >"$E2E_WORK/found" 2>/dev/null
+  [ ! -s "$E2E_WORK/found" ] || fail "a private key is in $(tr '\n' ' ' <"$E2E_WORK/found")"
+  docker logs mikrokat-tlsproxy 2>&1 </dev/null | grep -qF "PRIVATE KEY" && fail "the proxy logged a key"
+  # Cancel: a new request, then it is dropped.
+  curl -sS -o /dev/null -b "$E2E_WORK/cookies" --data-urlencode "token=$(form_token)" --data-urlencode "ca_request_name=$name" "$APP/tls/own-ca/request"
+  wait_for 15 request_pending || fail "no second request"
+  next=$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" --data-urlencode "token=$(form_token)" "$APP/tls/own-ca/request/cancel")
+  [ "$next" = "$APP/settings?ok=ca-request-cancelled&tab=https" ] || fail "cancel went to '$next'"
+  wait_for 15 request_gone || fail "the request was not cancelled"
+  [ ! -e data/tls/private/own-ca-request.key ] && [ ! -e data/tls/state/own-ca.csr ] || fail "the pending files stayed after cancel"
+  next=$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" --data-urlencode "token=$(form_token)" "$APP/tls/own-ca/remove")
+  wait_for 15 own_says false || fail "ca_own stayed true"
+  fetch_signed_by "$E2E_WORK/ca.pem" "Mikrokat local CA"
+}
+
+request_pending() {
+  [ "$(counter ca_request_pending)" = True ] || [ "$(counter ca_request_pending)" = true ]
+}
+
+request_gone() {
+  ! request_pending
+}
+
+# The real Chromium run of tests/e2e/browser.mjs, in the Playwright image. Playwright is installed by npm
+# inside that container, into a folder of this run, and enters nothing the project ships.
+BROWSER_IMAGE=${BROWSER_IMAGE:-mcr.microsoft.com/playwright:v1.56.1-jammy}
+
+have_browser() {
+  command -v docker >/dev/null && docker image inspect "$BROWSER_IMAGE" >/dev/null 2>&1 || docker pull -q "$BROWSER_IMAGE" </dev/null >/dev/null 2>&1
+}
+
+# browser <phase> [extra docker arguments...]
+browser() {
+  local phase=$1
+  shift
+  mkdir -p "$E2E_SHOTS"
+  cp tests/e2e/browser.mjs "$E2E_WORK/pw/"
+  docker run --rm --network host --ipc=host -e APP -e OUT=/out -e MK_PASSWORD -v "$E2E_WORK/pw:/w" -v "$E2E_SHOTS:/out" "$@" \
+    -w /w "$BROWSER_IMAGE" sh -c '[ -d node_modules/playwright ] || { npm init -y >/dev/null && npm i --silent --no-audit --no-fund playwright@1.56.1; }; node browser.mjs '"$phase" </dev/null ||
+    fail "the browser check $phase failed, see $E2E_SHOTS/failure-$phase.png"
+}
+
+# The Known devices list of a page rendered with 38 names, opened in the browser: the rendered page carries its CSS.
+names_fixture() {
+  docker exec mikrokat-app python3 -c '
+import sys
+sys.path.insert(0, "/app")
+import store, web
+store.settings["tls_enabled"] = True
+store.names.update({"10.9.0.%d" % n: "device-%02d" % n for n in range(37)})
+store.names["10.9.1.1"] = "Alpha-PC"
+sys.stdout.write(web.settings_page("example.lan:8088", tab="https"))
+' </dev/null >"$E2E_WORK/pw/names.html"
+}
+
+browser_checks() {
+  check "Real browser"
+  have_browser || { echo "no Docker image for the browser check, skipping it"; return 0; }
+  mkdir -p "$E2E_WORK/pw"
+  MK_PASSWORD=$(sed -n 's/^WEB_PASSWORD=//p' .env | tr -d '\n')
+  export MK_PASSWORD
+  browser request
+  wait_for 30 port_open || fail "port 1080 did not open after the browser switched it on"
+  cp "$E2E_SHOTS/root.crt" "$E2E_WORK/browser-root.pem"
+  fetch_signed_by "$E2E_WORK/browser-root.pem" "Mikrokat E2E requested CA"
+  grep -rl "PRIVATE KEY" data/tls/state >"$E2E_WORK/found" 2>/dev/null
+  [ ! -s "$E2E_WORK/found" ] || fail "a private key is in $(tr '\n' ' ' <"$E2E_WORK/found")"
+  browser pair
+  wait_for 15 own_says false || fail "ca_own stayed true after Stop"
+  names_fixture || fail "no page with many names"
+  browser names -e NAMES_HTML=/w/names.html
+  rm -f "$E2E_SHOTS"/*.key "$E2E_SHOTS"/*.srl
 }
 
 own_ca() {
@@ -474,6 +593,7 @@ checks() {
   [ "$code" != 0 ] || fail "the connection was served"
   wait_for 15 counter_above refused "$before" || fail "refused did not grow"
 
+  own_ca_request
   own_ca
 
   check "Switching off"
@@ -571,7 +691,11 @@ if [ "${1:-}" = measure ]; then
   measure
   RESULT="Measured"
 else
+  [ -n "$E2E_SHOTS" ] || E2E_SHOTS=$E2E_WORK/shots
+  # With the feature still off, because the browser switches it on through the page.
+  browser_checks
   feature on
+  wait_for 30 app_up || fail "the app did not come back"
   wait_for 30 port_open || fail "port 1080 did not open"
   cp data/tls/state/ca.pem "$E2E_WORK/ca.pem"
   checks
