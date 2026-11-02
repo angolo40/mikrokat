@@ -268,11 +268,19 @@ async function connections(page) {
   await shot(page, 'connections-light');
 
   step('the filters narrow the list');
-  await page.selectOption('select[name=device]', '127.0.0.1');
-  await Promise.all([page.waitForURL(/device=127.0.0.1/), page.click('.filters button')]);
+  // The newest 200 are all from 127.0.0.1 after the load tests, so the filter is shown on the other source: the refused one.
+  const sources = await page.locator('select[name=device] option').evaluateAll((os) => os.map((o) => o.value).filter((v) => v));
+  const other = sources.find((v) => v !== '127.0.0.1');
+  if (!other || !sources.includes('127.0.0.1')) fail(`the device filter offers ${JSON.stringify(sources)}`);
+  await page.selectOption('select[name=device]', other);
+  await Promise.all([page.waitForURL(/device=/), page.click('.filters button')]);
   const byDevice = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
   if (!byDevice.length || byDevice.length >= all) fail(`the device filter left ${byDevice.length} of ${all} rows`);
-  if (byDevice.some((t) => t.includes('Refused: Not on the device list'))) fail('the device filter kept a row of another device');
+  if (byDevice.some((t) => !t.includes('Refused: Not on the device list'))) fail('the device filter kept a row of another device');
+  await page.selectOption('select[name=device]', '127.0.0.1');
+  await Promise.all([page.waitForURL(/device=127.0.0.1/), page.click('.filters button')]);
+  const local = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
+  if (!local.length || local.some((t) => t.includes('Not on the device list'))) fail('the filter on 127.0.0.1 kept a row of the other device');
   await page.fill('input[name=site]', 'bad.example');
   await Promise.all([page.waitForURL(/site=bad.example/), page.click('.filters button')]);
   const bySite = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
