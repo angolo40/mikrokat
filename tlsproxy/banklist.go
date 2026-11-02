@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -88,10 +90,18 @@ func (l *BankList) Match(name string) bool {
 	return false
 }
 
+// suffixLabels are first labels that make a name like co.uk a public suffix.
+// Such a name in the list would switch off a whole country.
+var suffixLabels = map[string]bool{"co": true, "com": true, "org": true, "net": true, "gov": true, "ac": true, "edu": true}
+
 // validBankName reports whether line is a lower-case host name of at least two
-// labels, with no wildcard, of at most 253 characters.
+// labels, with no wildcard, of at most 253 characters, and not a public suffix
+// of two labels such as co.uk.
 func validBankName(line string) bool {
 	if len(line) > 253 || strings.Count(line, ".") < 1 {
+		return false
+	}
+	if first, _, two := strings.Cut(line, "."); two && suffixLabels[first] && strings.Count(line, ".") == 1 {
 		return false
 	}
 	for _, label := range strings.Split(line, ".") {
@@ -215,10 +225,26 @@ func (l *BankLoader) Wait() { l.wg.Wait() }
 // fetch downloads the archive, checks it and stores the names. It changes
 // nothing else.
 func (l *BankLoader) fetch() ([]string, error) {
+	if err := checkBankURL(l.URL); err != nil {
+		return nil, err
+	}
 	client := l.Client
 	if client == nil {
 		client = &http.Client{}
 	}
+	// A redirect must not lead the download to plain http. The client is copied,
+	// so one the caller shares is not changed.
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return errors.New("redirected to a page that is not https")
+		}
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	}
+	client = &c
 	ctx, cancel := context.WithTimeout(context.Background(), bankLimit)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, l.URL, nil)
@@ -259,6 +285,23 @@ func (l *BankLoader) fetch() ([]string, error) {
 	now := l.now()
 	os.Chtimes(p, now, now) // the time the copy counts from
 	return names, nil
+}
+
+// checkBankURL accepts an https address, or an http one that points at this
+// machine, which the tests use.
+func checkBankURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); u.Scheme == "http" && (host == "localhost" || ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return errors.New("the address must be https")
 }
 
 // bankEntryText returns the bank/domains entry of a .tar.gz, reading at most

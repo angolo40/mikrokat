@@ -444,3 +444,60 @@ func TestBuiltinHasAppleMicrosoftAndMoreBanks(t *testing.T) {
 		t.Errorf("%d names, the field holds 500", len(BuiltinBypass))
 	}
 }
+
+func TestBankRefusesRedirectToPlainHTTP(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) { t.Error("followed a redirect to http") }))
+	defer plain.Close()
+	r := newBankRig(t)
+	r.srv.Config.Handler = http.RedirectHandler(plain.URL, http.StatusFound)
+	r.tick(true)
+	_, _, errText := r.status_()
+	if errText == "" || r.List.Len() != 0 {
+		t.Fatalf("error %q, %d names", errText, r.List.Len())
+	}
+}
+
+func TestBankFollowsRedirectToHTTPS(t *testing.T) {
+	r := newBankRig(t)
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) { w.Write(goodArchive(t, 1200)) }))
+	defer target.Close()
+	r.srv.Config.Handler = http.RedirectHandler(target.URL, http.StatusFound)
+	r.Client.Transport.(*http.Transport).TLSClientConfig.RootCAs.AddCert(target.Certificate())
+	r.tick(true)
+	if names, _, errText := r.status_(); names != 1200 || errText != "" {
+		t.Fatalf("names %d error %q", names, errText)
+	}
+}
+
+func TestBankRefusesPlainHTTPUnlessLoopback(t *testing.T) {
+	l := NewBankLoader(NewBankList(), NewStats(), t.TempDir(), "http://bank.example.org/bank.tar.gz")
+	if _, err := l.fetch(); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("error %v", err)
+	}
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) { w.Write(goodArchive(t, 1200)) }))
+	defer plain.Close()
+	l = NewBankLoader(NewBankList(), NewStats(), t.TempDir(), plain.URL)
+	if names, err := l.fetch(); err != nil || len(names) != 1200 {
+		t.Fatalf("loopback http: %d names, %v", len(names), err)
+	}
+}
+
+func TestBankRefusesPublicSuffixes(t *testing.T) {
+	lines := append(bankNames(1000), "co.uk", "com.au", "org.br", "net.cn", "gov.it", "ac.jp", "edu.pl", "com.bank.example", "bank.co", "co.bank")
+	r := newBankRig(t)
+	r.serve(archive(t, [2]string{"bank/domains", strings.Join(lines, "\n")}), 200)
+	r.tick(true)
+	if names, _, errText := r.status_(); names != 1000+2 || errText != "" {
+		t.Fatalf("names %d error %q", names, errText)
+	}
+	for _, name := range []string{"co.uk", "shop.co.uk", "com.au", "org.br", "net.cn", "gov.it", "ac.jp", "edu.pl", "co.bank"} {
+		if r.List.Match(name) {
+			t.Errorf("%s was taken", name)
+		}
+	}
+	for _, name := range []string{"x.com.bank.example", "bank.co"} {
+		if !r.List.Match(name) {
+			t.Errorf("%s was refused", name)
+		}
+	}
+}

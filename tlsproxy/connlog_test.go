@@ -522,3 +522,84 @@ func TestConfigLogConnections(t *testing.T) {
 		t.Fatalf("%+v, %v", c, err)
 	}
 }
+
+func TestConnLogRefusedGlobalCap(t *testing.T) {
+	st := NewStats()
+	l := newLogRig(t, st)
+	now := time.Unix(1_700_000_000, 0)
+	l.now = func() time.Time { return now }
+	flood := func(n int) {
+		for i := range n {
+			l.AddRefused(ConnRecord{Device: fmt.Sprintf("198.51.100.%d", i), Action: "refused", Reason: "not_listed"})
+		}
+	}
+	flood(200) // 200 different sources in one second
+	now = now.Add(time.Second)
+	flood(60) // the count starts again
+	if lines := l.lines(t); len(lines) != 100 {
+		t.Fatalf("%d lines, want 50 for each second", len(lines))
+	}
+	if st.logSkipped != 150+10 {
+		t.Fatalf("skipped %d, want 160", st.logSkipped)
+	}
+}
+
+func TestConnLogClearRemovesBothFilesAndKeepsLogging(t *testing.T) {
+	l := newSmallLogRig(t, NewStats(), 300)
+	for range 10 {
+		l.Add(ConnRecord{Device: "192.0.2.1", Name: "a.example", Action: "relayed"})
+	}
+	time.Sleep(100 * time.Millisecond)
+	l.Clear()
+	for _, p := range []string{l.path, l.path + ".1"} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", p, err)
+		}
+	}
+	l.Add(ConnRecord{Device: "192.0.2.1", Name: "b.example", Action: "relayed"})
+	line := onlyLine(t, l.lines(t))
+	if line["name"] != "b.example" {
+		t.Fatalf("line %v", line)
+	}
+}
+
+func TestConnLogClearWhileOff(t *testing.T) {
+	l := newLogRig(t, NewStats())
+	l.Add(ConnRecord{Device: "192.0.2.1", Action: "relayed"})
+	l.lines(t) // stops the writer, the file is on disk
+	l.Clear()
+	if _, err := os.Stat(l.path); !os.IsNotExist(err) {
+		t.Fatalf("the file is still there: %v", err)
+	}
+	l.Add(ConnRecord{Device: "192.0.2.1", Action: "relayed"})
+	l.Wait()
+	if _, err := os.Stat(l.path); !os.IsNotExist(err) {
+		t.Fatal("written while off")
+	}
+}
+
+func TestServerDeletesTheLogOnRequest(t *testing.T) {
+	r := newSocksRig(t, echoServer(t, ""))
+	l := newLogRig(t, r.Engine.Stats)
+	r.Engine.Log = l.ConnLog
+	r.IncomingDir = t.TempDir()
+	r.cfg.LogConnections = true
+	r.Apply(r.cfg)
+	l.Add(ConnRecord{Device: "192.0.2.1", Action: "relayed"})
+	time.Sleep(100 * time.Millisecond)
+	os.WriteFile(l.path+".1", []byte("{}\n"), 0o644)
+	request := filepath.Join(r.IncomingDir, "delete-conn-log")
+	if err := os.WriteFile(request, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.Apply(r.cfg)
+	for _, p := range []string{l.path, l.path + ".1", request} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", p, err)
+		}
+	}
+	l.Add(ConnRecord{Device: "192.0.2.1", Name: "after.example", Action: "relayed"})
+	if line := onlyLine(t, l.lines(t)); line["name"] != "after.example" {
+		t.Fatalf("line %v", line)
+	}
+}

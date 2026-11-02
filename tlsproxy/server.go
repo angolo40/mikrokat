@@ -148,6 +148,9 @@ type Server struct {
 
 // NewServer returns a Server with the port closed. The first CA is made and
 // loaded into e.CA the first time the feature is enabled.
+// clearLogRequest is the file the app leaves to ask for the connection log to be deleted.
+const clearLogRequest = "delete-conn-log"
+
 func NewServer(e *Engine, privateDir, stateDir string) *Server {
 	return &Server{
 		Engine:     e,
@@ -176,6 +179,7 @@ func (s *Server) Apply(cfg Config) bool {
 	s.Engine.Bypass.Apply(cfg.AutoRemove)
 	s.readInterfaces()
 	s.pollOwn()
+	s.clearLog()
 
 	state := "off"
 	open := false
@@ -230,6 +234,23 @@ func (s *Server) Apply(cfg Config) bool {
 	s.state = state
 	log.Printf("proxy %s", state)
 	return true
+}
+
+// clearLog deletes the connection log when the app asked for it with a file in
+// the incoming folder. The request goes last, so a deletion cut in half is
+// done again.
+func (s *Server) clearLog() {
+	if s.IncomingDir == "" {
+		return
+	}
+	request := filepath.Join(s.IncomingDir, clearLogRequest)
+	if _, err := os.Lstat(request); err != nil {
+		return
+	}
+	s.Engine.Log.Clear()
+	if err := os.Remove(request); err != nil {
+		log.Printf("connection log: cannot delete the request: %v", err)
+	}
 }
 
 // readInterfaces refreshes the local networks, so a Docker network created

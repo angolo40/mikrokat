@@ -12,7 +12,7 @@ const (
 	maxLogSize = 5 << 20 // the file is rotated at this size, so two files hold about 10 MiB
 	logQueue   = 4096
 
-	maxRefusedSources = 8192 // sources remembered for the limit, for one second
+	maxRefusedPerSecond = 50 // refused lines in all, for each second, whatever the number of sources
 )
 
 // ConnRecord is one line of the connection log. It holds what the proxy did
@@ -111,7 +111,8 @@ func (l *ConnLog) Add(r ConnRecord) {
 }
 
 // AddRefused is Add for a refused connection, at most once per second for each
-// source, so a port scan cannot fill the file. The rest are counted.
+// source and 50 per second in all, so a port scan, even from many addresses,
+// cannot fill the file. The rest are counted.
 func (l *ConnLog) AddRefused(r ConnRecord) {
 	if l == nil || !l.enabled.Load() {
 		return
@@ -122,9 +123,8 @@ func (l *ConnLog) AddRefused(r ConnRecord) {
 		clear(l.refused)
 		l.refSec = sec
 	}
-	// A scan from more sources than the table holds is limited as a whole.
 	_, seen := l.refused[r.Device]
-	skip := seen || len(l.refused) >= maxRefusedSources
+	skip := seen || len(l.refused) >= maxRefusedPerSecond
 	if !skip {
 		l.refused[r.Device] = true
 	}
@@ -135,6 +135,30 @@ func (l *ConnLog) AddRefused(r ConnRecord) {
 	}
 	r.At = sec
 	l.Add(r)
+}
+
+// Clear deletes the log and its backup, and goes on logging if it was on. The
+// writer is stopped while the files go, so it cannot write into a deleted one.
+func (l *ConnLog) Clear() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	on := l.enabled.Load()
+	if on {
+		l.enabled.Store(false)
+		close(l.stop)
+	}
+	done := l.done
+	l.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	os.Remove(l.path)
+	os.Remove(l.path + ".1")
+	if on {
+		l.SetEnabled(true)
+	}
 }
 
 // run writes records until stop, then what is queued, then ends. A writer
