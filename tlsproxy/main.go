@@ -14,6 +14,7 @@ const (
 	controlPath = "/tls/control/config.json"
 	stateDir    = "/tls/state"
 	privateDir  = "/tls/private"
+	incomingDir = "/tls/incoming"
 	statsPath   = "/tls/state/stats.json"
 
 	emitAddr  = "127.0.0.1:37008"
@@ -45,6 +46,7 @@ func main() {
 		Stats:   stats,
 		Dial:    Dial,
 	}, privateDir, stateDir)
+	server.IncomingDir = incomingDir
 
 	reader := controlReader{path: controlPath}
 	writeStats := func() {

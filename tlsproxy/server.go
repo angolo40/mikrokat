@@ -123,6 +123,8 @@ type Server struct {
 	GreetLimit time.Duration // zero means 5 seconds
 	Interfaces func() ([]HostInterface, error)
 
+	IncomingDir string // where the app leaves an uploaded CA, "" for none
+
 	local atomic.Pointer[localNets] // nil until the first list, and Apply opens no port before that
 
 	mu         sync.Mutex
@@ -130,6 +132,9 @@ type Server struct {
 	ln         net.Listener // nil while the port is closed
 	port       int
 	caGen      int
+	caOwn      bool                                     // the last look found own files
+	ownSeen    string                                   // the own files as loaded, "" if they could not be
+	ownNews    bool                                     // the upload state changed, tell the app at once
 	conns      map[string]map[uint64]context.CancelFunc // by device, then by connection
 	total      int                                      // connections in conns
 	nextConn   uint64
@@ -163,6 +168,7 @@ func (s *Server) Apply(cfg Config) bool {
 	s.Engine.Bypass.SetOwn(cfg.Bypass)
 	s.Engine.Bypass.Apply(cfg.AutoRemove)
 	s.readInterfaces()
+	s.pollOwn()
 
 	state := "off"
 	open := false
@@ -180,9 +186,10 @@ func (s *Server) Apply(cfg Config) bool {
 			problem = "no interface list"
 			open = false
 		}
-	} else if cfg.CAGeneration != 0 && s.caStored() {
+	} else if s.ownStored() || cfg.CAGeneration != 0 && s.caStored() {
 		// Regenerate does not wait for the next switch-on. Generation 0 is
 		// where a missing control file lands, and nobody asked for that one.
+		// An own CA is loaded while off too, so the page can show it.
 		if err := s.loadCA(cfg.CAGeneration); err != nil {
 			problem = fmt.Sprintf("CA failed: %v", err)
 		}
@@ -208,8 +215,10 @@ func (s *Server) Apply(cfg Config) bool {
 		}
 	}
 	s.Engine.Stats.SetListening(s.ln != nil, problem)
+	news := s.ownNews
+	s.ownNews = false
 	if state == s.state {
-		return false
+		return news
 	}
 	s.state = state
 	log.Printf("proxy %s", state)
@@ -238,8 +247,17 @@ func (s *Server) caStored() bool {
 	return err == nil
 }
 
-// loadCA stores the CA of this generation, unless it is already there.
+// loadCA stores the own CA while its files are there. They alone decide, so
+// neither a generation nor their failure ever reaches the generated CA. Without
+// them it stores the CA of this generation, unless it is already there.
 func (s *Server) loadCA(generation int) error {
+	if s.ownStored() {
+		return s.loadOwn()
+	}
+	// LoadCA replaces a pair that does not match, so ca.pem must be right first.
+	if err := s.restoreGenerated(); err != nil {
+		return err
+	}
 	if s.Engine.CA.Load() != nil && generation == s.caGen {
 		return nil
 	}
