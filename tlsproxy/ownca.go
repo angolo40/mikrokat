@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -27,9 +28,10 @@ const (
 	// What state/ca.pem held before an own chain replaced it, empty if nothing.
 	savedGenerated = "generated-ca.pem"
 
-	ownFileLimit = 1 << 20 // the app takes 256 KiB, this is against anything else
-	ownLoneLimit = 60 * time.Second
-	ownCheckName = "own-ca-check.invalid"
+	ownFileLimit  = 1 << 20 // the app takes 256 KiB, this is against anything else
+	ownLoneLimit  = 60 * time.Second
+	ownCheckName  = "own-ca-check.invalid"
+	ownRSAMaxBits = 8192 // signing with more freezes the proxy for minutes
 )
 
 // parseOwnCA checks a certificate file and a key file and returns the CA they
@@ -143,6 +145,9 @@ func parseOwnKey(data []byte) (crypto.Signer, error) {
 		}
 		switch k := key.(type) {
 		case *rsa.PrivateKey:
+			if k.N.BitLen() > ownRSAMaxBits {
+				return nil, fmt.Errorf("the RSA key is too large: %d bits, the limit is %d", k.N.BitLen(), ownRSAMaxBits)
+			}
 			return k, nil
 		case *ecdsa.PrivateKey:
 			return k, nil
@@ -174,7 +179,18 @@ func chainPEM(ca *CA) []byte {
 // network while this process holds the keys. A link to a device or a pipe must
 // not hang it, and a huge file must not exhaust it.
 func readOwnFile(path string) ([]byte, error) {
-	st, err := os.Lstat(path)
+	// O_NONBLOCK so that a pipe swapped in after any earlier look cannot hang
+	// the open, and O_NOFOLLOW so that a link is refused. What is checked is the
+	// open file, not the name.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%s is not a regular file", filepath.Base(path))
+		}
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +200,14 @@ func readOwnFile(path string) ([]byte, error) {
 	if st.Size() > ownFileLimit {
 		return nil, fmt.Errorf("%s is too large", filepath.Base(path))
 	}
-	return os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, ownFileLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > ownFileLimit {
+		return nil, fmt.Errorf("%s is too large", filepath.Base(path))
+	}
+	return data, nil
 }
 
 // isNotDir reports a path through something that is not a folder. os.ErrNotExist
