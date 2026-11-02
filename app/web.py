@@ -61,6 +61,7 @@ NOTICES = {
     "ca-requested": "The proxy is making the key and the request. Reload this page in a few seconds, then download the request.",
     "ca-request-cancelled": "The pending key and request are being deleted.",
     "ca-removed": "The proxy goes back to the generated CA within a few seconds. Devices now need that one: download it from this tab and import it.",
+    "log-deleted": "The connection log is deleted, and the Connections page starts empty.",
 }
 CA_EXTENSIONS = """basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
@@ -966,7 +967,8 @@ def https_card(host, switch, field):
                + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
                + switch("tls_log", "Keep a log of connections", s["tls_log"])
                + '<p class="hint">This log shows which sites each listed device visited, so the consent note above applies. It holds no URLs or content. '
-               'See it on the <a href="/connections">Connections page</a>.</p>'
+               'Turning it off stops new lines and keeps what is there. See it on the <a href="/connections">Connections page</a>.</p>'
+               '<div class="actions"><button class="ghost" formaction="/tls/log/delete" onclick="return confirm(\'Delete the connection log? Both log files are removed and the Connections page starts empty. This cannot be undone.\')">Delete the log</button></div>'
                + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
                f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
                f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
@@ -1566,8 +1568,10 @@ class Handler(BaseHTTPRequestHandler):
             actions.reset()
             actions.reset_copy()
             done, page = "saved", "/settings"
-        elif self.path in ("/tls/regenerate", "/tls/bypass/remove", "/tls/own-ca/remove", "/tls/own-ca/request", "/tls/own-ca/request/cancel"):
-            if self.path == "/tls/own-ca/request":
+        elif self.path in ("/tls/regenerate", "/tls/bypass/remove", "/tls/own-ca/remove", "/tls/own-ca/request", "/tls/own-ca/request/cancel", "/tls/log/delete"):
+            if self.path == "/tls/log/delete":
+                error, done = store.delete_connection_log(), "log-deleted"
+            elif self.path == "/tls/own-ca/request":
                 done = "ca-requested"
                 error = store.ca_name_error(form.get("ca_request_name", "")) or (
                     None if store.tls_running() else "The proxy is not running, so nothing was asked. Start it and try again.") or store.request_ca(form["ca_request_name"])
@@ -1594,7 +1598,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(settings_page(host, "", error, "https"))
                 return
             store.activity_add("system", {"/tls/regenerate": "Regenerated the HTTPS inspection CA", "/tls/own-ca/remove": "Asked the proxy to stop using the own CA",
-                                    "/tls/own-ca/request": "Asked the proxy for a key and a signing request for the own CA", "/tls/own-ca/request/cancel": "Cancelled the pending own CA request"}.get(self.path, "Removed an automatic HTTPS bypass"))
+                                    "/tls/own-ca/request": "Asked the proxy for a key and a signing request for the own CA", "/tls/own-ca/request/cancel": "Cancelled the pending own CA request",
+                                    "/tls/log/delete": "Deleted the HTTPS connection log"}.get(self.path, "Removed an automatic HTTPS bypass"))
             self.send_response(303)
             self.send_header("Location", f"/settings?ok={done}&tab=https")
             self.end_headers()

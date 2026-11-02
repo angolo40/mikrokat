@@ -89,9 +89,9 @@ class Reading(Conn):
         self.assertEqual(store.read_connections(), 4)
         hour = time.strftime("%Y-%m-%d %H", time.localtime(at))
         self.assertEqual(self.rows("hourly_conn"), [
+            (hour, "(refused)", "refused", "not_listed", 1, 0),
             (hour, "10.0.0.5", "inspected", "", 2, 1003),
-            (hour, "10.0.0.5", "relayed", "bypass", 1, 30),
-            (hour, "10.0.0.99", "refused", "not_listed", 1, 0)])
+            (hour, "10.0.0.5", "relayed", "bypass", 1, 30)])
         self.assertEqual(self.rows("hourly_sites"), [
             (hour, "10.0.0.5", "bank.example", 1, 30),
             (hour, "10.0.0.5", "site.example", 2, 1003)])
@@ -206,6 +206,30 @@ class Reading(Conn):
         store.prune()
         for table in ("hourly_conn", "hourly_sites", "hourly_decrypted_alerts"):
             self.assertEqual([r[0] for r in self.rows(table)], [new], table)
+
+
+class Flood(Conn):
+    def test_refused_sources_collapse_into_one_row(self):
+        at = int(time.time())
+        self.write(*[line(action="refused", reason="not_listed", device=f"10.1.{i // 250}.{i % 250}", name="", up=0, down=0, at=at) for i in range(600)],
+                   line(action="refused", reason="cap", device="10.9.9.9", name="", up=0, down=0, at=at))
+        store.read_connections()
+        hour = time.strftime("%Y-%m-%d %H", time.localtime(at))
+        self.assertEqual(self.rows("hourly_conn"), [(hour, "(refused)", "refused", "cap", 1, 0), (hour, "(refused)", "refused", "not_listed", 600, 0)])
+
+    def test_the_recent_list_keeps_the_real_source(self):
+        self.write(line(action="refused", reason="not_listed", device="10.9.9.9", name="", up=0, down=0))
+        store.read_connections()
+        self.assertEqual([r["device"] for r in store.conn_recent()], ["10.9.9.9"])
+
+    def test_devices_seen_leaves_out_refused_and_stops_at_100(self):
+        at = int(time.time())
+        self.write(*[line(device=f"10.2.0.{i}", at=at) for i in range(150)], line(action="refused", reason="cap", device="10.9.9.9", name="", at=at))
+        store.read_connections()
+        seen = store.conn_devices_seen()
+        self.assertEqual(len(seen), 100)
+        self.assertNotIn("10.9.9.9", seen)
+        self.assertNotIn("(refused)", seen)
 
 
 class DecryptedAlerts(Conn):
@@ -413,6 +437,59 @@ class Http(Conn):
         recent = body[body.index("Recent connections"):]
         self.assertIn("b.example", recent)
         self.assertNotIn("a.example", recent)
+
+
+class DeleteLog(Http):
+    def post(self, path, fields, cookie=True):
+        body = "&".join(f"{k}={v}" for k, v in fields.items()).encode()
+        client = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=20)
+        self.addCleanup(client.close)
+        client.putrequest("POST", path)
+        client.putheader("Content-Type", "application/x-www-form-urlencoded")
+        client.putheader("Content-Length", str(len(body)))
+        if cookie:
+            client.putheader("Cookie", f"{web.SESSION_COOKIE}={self.session}")
+        client.endheaders()
+        client.send(body)
+        reply = client.getresponse()
+        return reply.status, reply.getheader("Location"), reply.read().decode()
+
+    def setUp(self):
+        super().setUp()
+        self.session = web.new_session()
+        self.marker = os.path.join(store.TLS_DIR, "incoming", "delete-conn-log")
+        self.write(line(), line(name="b.example"))
+        store.read_connections()
+        self.assertTrue(self.total("hourly_conn", "count"))
+
+    def test_the_button_is_on_the_tab_with_a_confirmation(self):
+        page = web.settings_page("mikrokat.lan:8088", "", "", "https")
+        self.assertIn('formaction="/tls/log/delete"', page)
+        self.assertRegex(page, r'formaction="/tls/log/delete"[^>]*confirm\(')
+
+    def test_delete_asks_the_proxy_and_empties_the_tables(self):
+        status, location, _ = self.post("/tls/log/delete", {"token": web.csrf_token})
+        self.assertEqual((status, location), (303, "/settings?ok=log-deleted&tab=https"))
+        self.assertTrue(os.path.exists(self.marker))
+        for table in ("hourly_conn", "hourly_sites"):
+            self.assertEqual(self.rows(table), [], table)
+
+    def test_without_the_token_nothing_happens(self):
+        for fields in ({}, {"token": "wrong"}):
+            self.assertEqual(self.post("/tls/log/delete", fields)[0], 403)
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertTrue(self.rows("hourly_conn"))
+
+    def test_without_a_session_nothing_happens(self):
+        status, location, _ = self.post("/tls/log/delete", {"token": web.csrf_token}, cookie=False)
+        self.assertEqual((status, location), (303, "/login"))
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertTrue(self.rows("hourly_conn"))
+
+    def test_lines_still_in_the_old_file_are_not_counted_again(self):
+        self.post("/tls/log/delete", {"token": web.csrf_token})
+        self.assertEqual(store.read_connections(), 0)  # the proxy has not removed the file yet
+        self.assertEqual(self.rows("hourly_conn"), [])
 
 
 if __name__ == "__main__":

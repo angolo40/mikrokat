@@ -841,6 +841,8 @@ def decrypted_alerts(days=1):
 CONN_CHUNK = 4 * 2**20
 CONN_TAIL = 2 * 2**20
 CONN_RECENT = 200
+CONN_REFUSED_DEVICE = "(refused)"
+CONN_DEVICES_SEEN = 100
 
 
 def conn_path():
@@ -955,7 +957,9 @@ def read_connections():
     for r in records:
         hour = time.strftime("%Y-%m-%d %H", time.localtime(r["at"]))
         size = r["up"] + r["down"]
-        c = counts.setdefault((hour, r["device"], r["action"], r["reason"]), [0, 0])
+        # A scan from many addresses would add a row for each one, so refused sources share a row.
+        device = CONN_REFUSED_DEVICE if r["action"] == "refused" else r["device"]
+        c = counts.setdefault((hour, device, r["action"], r["reason"]), [0, 0])
         c[0] += 1
         c[1] += size
         if r["action"] != "refused" and r["name"]:
@@ -1024,9 +1028,27 @@ def conn_devices(limit=20):
 
 
 def conn_devices_seen():
-    """Return every device with a connection in the last 24 hours, for the filter."""
+    """Return the devices with a connection in the last 24 hours, for the filter, at most 100. Refused sources are left out."""
     with database() as db:
-        return [r[0] for r in db.execute("SELECT DISTINCT device FROM hourly_conn WHERE hour >= ? ORDER BY device", (conn_since(1),))]
+        return [r[0] for r in db.execute("SELECT DISTINCT device FROM hourly_conn WHERE hour >= ? AND action != 'refused' ORDER BY device LIMIT ?",
+                                         (conn_since(1), CONN_DEVICES_SEEN))]
+
+
+def delete_connection_log():
+    """Ask the TLS proxy to delete the log and its backup, and empty the tables made from it. Return an error message, or None.
+
+    The place read so far is kept, so lines still in the file before the proxy removes it are not counted again.
+    """
+    try:
+        with open(os.open(os.path.join(TLS_DIR, "incoming", "delete-conn-log"), os.O_WRONLY | os.O_CREAT, 0o600)):
+            pass
+    except OSError as failure:
+        print(f"[mikrokat] cannot ask the proxy to delete the connection log: {failure}", flush=True)
+        return "The request could not be stored, so nothing has changed."
+    with database() as db:
+        db.execute("DELETE FROM hourly_conn")
+        db.execute("DELETE FROM hourly_sites")
+    return None
 
 
 def conn_tail(path, size):
