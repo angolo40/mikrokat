@@ -3,5 +3,7 @@ services:
   tlsproxy:
     environment:
       SSL_CERT_FILE: /e2e/test-ca.pem
+      # A local server, so no test calls the real list.
+      TLS_BANK_LIST_URL: http://127.0.0.1:8099/bank.tar.gz
     volumes:
       - ${E2E_WORK:?run.sh sets this}/test-ca.pem:/e2e/test-ca.pem:ro

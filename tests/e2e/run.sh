@@ -32,6 +32,7 @@ CHECK=Setup
 RESULT="FAIL: stopped early"
 SERVER_PID=
 HOLDER_PID=
+BANK_PID=
 
 check() {
   CHECK=$1
@@ -495,6 +496,52 @@ log_has() {
 }
 
 # The traffic of the checks above is in the log and on the Connections page, and the log holds no URL.
+bank_list_loaded() {
+  [ "$(json_get bank_list_names <data/tls/state/stats.json)" = 1101 ]
+}
+
+# bank_switch true|false: sets tls_bank_list in the settings file and waits for the control file to say so.
+bank_switch() {
+  python3 - "$1" <<'PY'
+import json
+import os
+import sys
+
+path = "data/app/settings.json"
+with open(path, encoding="utf-8") as source:
+    settings = json.load(source)
+settings["tls_bank_list"] = sys.argv[1] == "true"
+with open(os.open(path, os.O_WRONLY | os.O_TRUNC, 0o600), "w", encoding="utf-8") as target:
+    json.dump(settings, target)
+PY
+  docker restart -t 2 mikrokat-app </dev/null >/dev/null
+  wait_for 30 app_up || fail "the app did not come back"
+  sign_in
+  wait_for 30 grep -q "\"bank_list\": $1" data/tls/control/config.json || fail "the control file does not say bank_list $1"
+}
+
+# The proxy downloads the list from the local server, and skips a name on it for the reason bank_list.
+bank_checks() {
+  check "Bank list"
+  local status=data/tls/state/stats.json before body
+  wait_for 60 bank_list_loaded || fail "the proxy did not load the list: names $(json_get bank_list_names <$status), error $(json_get bank_list_error <$status)"
+  [ "$(json_get bank_list_error <$status)" = '""' ] || fail "bank_list_error is $(json_get bank_list_error <$status)"
+  [ -s data/tls/state/bank-list.txt ] || fail "no copy is stored"
+  [ "$(wc -l <data/tls/state/bank-list.txt)" = 1101 ] || fail "the stored copy has $(wc -l <data/tls/state/bank-list.txt) names"
+  before=$(counter relayed.bank_list)
+  body=$(through_proxy banked.example.net --cacert "$E2E_WORK/test-ca.pem" https://banked.example.net/ 2>&1)
+  [ "$body" = "mikrokat-e2e-ok" ] || fail "the bank name was not relayed with its own certificate: $body"
+  wait_for 15 counter_above relayed.bank_list "$before" || fail "relayed.bank_list did not grow"
+  log_has '"name":"banked.example.net".*"reason":"bank_list"' || fail "no bank_list line in the log"
+
+  bank_switch false
+  sleep 3
+  body=$(through_proxy banked.example.net --cacert "$E2E_WORK/ca.pem" https://banked.example.net/ 2>&1)
+  [ "$body" = "mikrokat-e2e-ok" ] || fail "no answer with the switch off: $body"
+  [ "$(counter relayed.bank_list)" = "$((before + 1))" ] || fail "the bank list still applied with the switch off"
+  bank_switch true
+}
+
 connections_checks() {
   check "Connection log"
   local log=data/tls/state/connections.jsonl
@@ -505,6 +552,7 @@ connections_checks() {
   log_has '"name":"pinned.example.net".*"reason":"auto_bypass"' || fail "no auto_bypass line for pinned.example.net"
   log_has '"action":"refused","reason":"destination"' || fail "no refused line, reason destination"
   log_has '"action":"refused","reason":"not_listed"' || fail "no refused line, reason not_listed"
+  log_has '"name":"banked.example.net".*"reason":"bank_list"' || fail "no relayed line, reason bank_list, for banked.example.net"
   # The requests above had these in the path, the query, a header and a body.
   if grep -E "mikrokat-e2e|$URL_TOKEN|$COOKIE|$POST_BODY|GET |POST |Cookie|HTTP/1" "$log" >"$E2E_WORK/found"; then
     fail "the log holds request content: $(head -c 300 "$E2E_WORK/found")"
@@ -517,7 +565,7 @@ connections_checks() {
   local page
   page=$(curl -s -b "$E2E_WORK/cookies" "$APP/connections")
   for text in test.example.net bad.example.net "The certificate of the site failed the checks" "Skipped automatically after a refusal" \
-              "Not on the device list" "Destination not allowed" "Inspected" 'class="legend"'; do
+              "Not on the device list" "Destination not allowed" "Name on the downloaded bank list" banked.example.net "Inspected" 'class="legend"'; do
     grep -qF "$text" <<<"$page" || fail "the page does not show: $text"
   done
   grep -q 'mikrokat-e2e' <<<"$page" && fail "the page shows a path"
@@ -641,6 +689,7 @@ checks() {
   [ "$code" != 0 ] || fail "the connection was served"
   wait_for 15 counter_above refused "$before" || fail "refused did not grow"
 
+  bank_checks
   connections_checks
 
   own_ca_request
@@ -687,6 +736,8 @@ finish() {
   echo "== $CHECK"
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null
   [ -z "$HOLDER_PID" ] || kill "$HOLDER_PID" 2>/dev/null
+  [ -z "$BANK_PID" ] || kill "$BANK_PID" 2>/dev/null
+  rm -f data/tls/state/bank-list.txt
   ip route del local "$SERVER/32" dev lo 2>/dev/null
   remove_rules
   feature remove
@@ -716,7 +767,25 @@ setup() {
   openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=test.example.net \
     -keyout "$E2E_WORK/server.key" -out "$E2E_WORK/server.csr" 2>/dev/null || fail "no server key"
   openssl x509 -req -in "$E2E_WORK/server.csr" -CA "$E2E_WORK/test-ca.pem" -CAkey "$E2E_WORK/test-ca.key" -CAcreateserial -days 2 \
-    -extfile <(echo "subjectAltName=DNS:test.example.net,DNS:pinned.example.net") -out "$E2E_WORK/server.pem" 2>/dev/null || fail "no server certificate"
+    -extfile <(echo "subjectAltName=DNS:test.example.net,DNS:pinned.example.net,DNS:banked.example.net") -out "$E2E_WORK/server.pem" 2>/dev/null || fail "no server certificate"
+
+  # The bank list the proxy downloads: 1100 made-up names and one the test server answers to.
+  mkdir -p "$E2E_WORK/bank"
+  python3 - "$E2E_WORK/bank/bank.tar.gz" <<'PY'
+import io
+import sys
+import tarfile
+
+names = [f"n{i:04d}.bank-e2e.example" for i in range(1100)] + ["banked.example.net"]
+data = ("\n".join(names) + "\n").encode()
+with tarfile.open(sys.argv[1], "w:gz") as tar:
+    info = tarfile.TarInfo("bank/domains")
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
+PY
+  python3 -m http.server 8099 --bind 127.0.0.1 --directory "$E2E_WORK/bank" >/dev/null 2>&1 &
+  BANK_PID=$!
+  rm -f data/tls/state/bank-list.txt
 
   # A local route, not an address on lo: the proxy refuses the addresses of the host's interfaces.
   ip route add local "$SERVER/32" dev lo || fail "no route to $SERVER"

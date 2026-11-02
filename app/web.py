@@ -539,6 +539,7 @@ PASSED_REASONS = {
     "not_tls": "Not TLS",
     "no_name": "No server name sent",
     "bypass": "Name on the skip list",
+    "bank_list": "Name on the downloaded bank list",
     "auto_bypass": "Skipped automatically after a refusal",
     "ca_expired": "The CA has expired",
     "upstream": "The certificate of the site failed the checks",
@@ -931,6 +932,21 @@ def bypass_field():
     return defaults + [name for name in own if name not in defaults], "", hint
 
 
+def bank_list_status(stats):
+    """The line under the bank list switch. The proxy wrote the numbers and the error, so each is checked and escaped."""
+    def whole(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    names, at, error = whole(stats.get("bank_list_names")), whole(stats.get("bank_list_at")), stats.get("bank_list_error")
+    if names and at:
+        text = f"{number(names)} names, downloaded {time.strftime('%Y-%m-%d', time.localtime(at))}."
+    else:
+        text = "No copy yet. The proxy downloads one within a few seconds of switching on, and keeps it for 30 days."
+    if isinstance(error, str) and error:
+        text += f" The last download failed: {error[:200]}. The old copy stays in use, and the proxy tries again in 6 hours."
+    return esc(text)
+
+
 def https_card(host, switch, field):
     """The HTTPS inspection tab. Names in stats.json came from client traffic, so everything from it is escaped."""
     s = store.settings
@@ -955,6 +971,9 @@ def https_card(host, switch, field):
                f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
                f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
                f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}'
+               + switch("tls_bank_list", "Skip the bank list", s["tls_bank_list"])
+               + '<p class="hint">The proxy downloads a list of bank domains from the Université Toulouse Capitole and skips them. It covers many banks but not all, '
+               'and it is not shown in the field below, so add yours there if it is missing. ' + bank_list_status(stats) + '</p>'
                f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="8">{esc(chr(10).join(bypass_names))}</textarea>{bypass_flag}'
                f'<span class="hint">{bypass_hint}</span></label>'
 

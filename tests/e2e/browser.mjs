@@ -136,6 +136,14 @@ async function request(page) {
   const after = (await page.locator('textarea[name=tls_bypass]').inputValue()).split('\n').map((t) => t.trim());
   if (after.length !== listed.length) fail(`a save changed the list from ${listed.length} to ${after.length} names`);
 
+  step('the bank list switch is on the tab, with the source and the status');
+  const bank = page.locator('label.switch:has-text("Skip the bank list")');
+  await shown(bank, 'the Skip the bank list switch');
+  if (!(await page.locator('input[name=tls_bank_list]').isChecked())) fail('the bank list switch is not on by default');
+  await shown(page.locator('text=Université Toulouse Capitole'), 'the source of the bank list');
+  await untilShown(page, page.locator('text=1 101 names, downloaded'), 'the bank list status');
+  await shot(page, 'bank-list-switch');
+
   step('create a request');
   await page.fill('input[name=ca_request_name]', CA_NAME);
   await Promise.all([page.waitForURL(/ok=ca-requested/), page.click('button:has-text("Create request")')]);
@@ -256,7 +264,7 @@ async function connections(page) {
   const all = await rows.count();
   if (all < 3) fail(`only ${all} recent connections`);
   const text = await rows.allTextContents();
-  for (const expected of ['test.example.net', 'bad.example.net', 'Refused']) if (!text.some((t) => t.includes(expected))) fail(`no recent row with ${expected}`);
+  for (const expected of ['test.example.net', 'bad.example.net', 'banked.example.net', 'Passed: Name on the downloaded bank list', 'Refused']) if (!text.some((t) => t.includes(expected))) fail(`no recent row with ${expected}`);
   await shot(page, 'connections-light');
 
   step('the filters narrow the list');

@@ -55,6 +55,7 @@ settings = {
     "tls_ca_request_name": "Mikrokat Inspection CA",
     "tls_ca_request_cancel": 0,
     "tls_auto_remove": [],
+    "tls_bank_list": True,  # skip the names of the bank list the proxy downloads
     "tls_log": True,  # keep the proxy's log of connections, and read it for the Connections page
     "router_host": os.environ.get("ROUTER_HOST", ""),
     "router_user": os.environ.get("ROUTER_USER", "mikrokat"),
@@ -200,7 +201,8 @@ def write_tls_control():
               "bypass_custom": settings["tls_bypass_saved"],
               "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"]),
               "ca_request": settings["tls_ca_request"], "ca_request_name": settings["tls_ca_request_name"],
-              "ca_request_cancel": settings["tls_ca_request_cancel"], "log_connections": bool(settings["tls_log"])}
+              "ca_request_cancel": settings["tls_ca_request_cancel"], "log_connections": bool(settings["tls_log"]),
+              "bank_list": bool(settings["tls_bank_list"])}
     path = os.path.join(TLS_DIR, "control", "config.json")
     temp = path + ".tmp"
     try:
@@ -584,7 +586,7 @@ def save_settings(form):
                         ai_model=ai_model, ai_key=form.get("ai_key", "") or settings["ai_key"], ai_language=form.get("ai_language", "").strip()[:30] or "English")
         settings.update(oidc_enabled=oidc, oidc_issuer=oidc_issuer, oidc_client_id=oidc_client, oidc_client_secret=oidc_secret, oidc_group=oidc_group,
                         oidc_label=form.get("oidc_label", "").strip()[:30] or "SSO", oidc_scopes=form.get("oidc_scopes", "").strip() or "openid profile email")
-        settings.update(tls_log=bool(form.get("tls_log")))
+        settings.update(tls_log=bool(form.get("tls_log")), tls_bank_list=bool(form.get("tls_bank_list")))
         settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices)
         if "tls_bypass" in form:
             # The field holds the whole list, defaults included, unless the page could not read them.
