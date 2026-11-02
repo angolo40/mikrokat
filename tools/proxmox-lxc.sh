@@ -242,9 +242,9 @@ case "$1" in
     fi
     say "Building and starting Mikrokat"
     docker compose up -d --build --remove-orphans
-    # Compose leaves a running container alone when its profile goes.
+    # Compose leaves a running container alone when its profile goes. By name, as an older release has no such service.
     if ! grep -qE '^COMPOSE_PROFILES=.*https' .env; then
-      docker compose --profile https rm -sf tlsproxy
+      docker rm -f mikrokat-tlsproxy >/dev/null 2>&1 || true
     fi
     ;;
   *)

@@ -294,7 +294,6 @@ measure() {
   echo "RAM off: $(ram), peak $(peak_mb) MB"
   feature on
   wait_for 30 port_open || fail "port 1080 did not open"
-  profile_removed_check
   cp data/tls/state/ca.pem "$E2E_WORK/ca.pem"
   sleep 3
 
@@ -746,6 +745,7 @@ finish() {
   remove_rules
   feature remove
   drop_own_ca
+  wait_for 15 incoming_empty || true # only the proxy empties that folder, and it may be about to go
   # Without the override, so the proxy trusts the public roots again and forgets the automatic bypass.
   # As the owner has it: the profile from .env decides whether the proxy exists, and the app drops the test's variable.
   unset COMPOSE_PROFILES
@@ -876,6 +876,7 @@ else
   wait_for 30 app_up || fail "the app did not come back"
   wait_for 30 port_open || fail "port 1080 did not open"
   cp data/tls/state/ca.pem "$E2E_WORK/ca.pem"
+  profile_removed_check
   checks
   RESULT=PASS
 fi
