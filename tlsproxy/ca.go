@@ -37,6 +37,8 @@ type CA struct {
 	key   crypto.Signer
 	cert  *x509.Certificate
 	chain [][]byte // sent after each leaf, for an uploaded CA
+	// expires is the earliest end of validity in the chain, for an uploaded CA.
+	expires time.Time
 
 	mu    sync.Mutex
 	cache map[string]*tls.Certificate

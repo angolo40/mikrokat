@@ -335,6 +335,14 @@ func TestImportRefused(t *testing.T) {
 		c.NotBefore, c.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-time.Hour)
 	})
 	underOld := makeCA(t, "Under old root", good, expiredRoot)
+	root0 := makeCA(t, "Root without room", ecKey(t, elliptic.P256()), nil, func(c *x509.Certificate) {
+		c.MaxPathLen, c.MaxPathLenZero = 0, true
+	})
+	underRoot0 := makeCA(t, "Under root without room", good, root0)
+	stranger := makeCA(t, "Stranger", ecKey(t, elliptic.P256()), nil)
+	clientOnly := makeCA(t, "Client only", good, nil, func(c *x509.Certificate) {
+		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	})
 	// Go reads an RSA key this small but will not sign with it, so only a real
 	// signature finds out. It takes a setting to make one, for this subtest only.
 	var weak *testCA
@@ -381,6 +389,11 @@ func TestImportRefused(t *testing.T) {
 			pem.EncodeToMemory(&pem.Block{Type: "OPENSSH PRIVATE KEY", Bytes: []byte{1, 2, 3}})},
 		{"damaged key", "unknown key type", goodCA.pem,
 			pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1, 2, 3}})},
+		{"too many certificates", "more than 8", bytes.Repeat(goodCA.pem, 9), goodKey},
+		{"unrelated second certificate", "certificate 1 of the chain is not signed by certificate 2",
+			append(append([]byte{}, goodCA.pem...), stranger.pem...), goodKey},
+		{"root without room for a CA below", "path length", append(append([]byte{}, underRoot0.pem...), root0.pem...), goodKey},
+		{"client authentication only", "server authentication", clientOnly.pem, goodKey},
 		{"key that cannot sign", "at least 1024 bits", weak.pem, pkcs1(weak.key.(*rsa.PrivateKey))},
 	}
 	// Whatever is in use stays in use: the CA the proxy made, or an earlier upload.
@@ -1031,5 +1044,36 @@ func TestImportLogsNoKey(t *testing.T) {
 	block, _ := pem.Decode(key)
 	if strings.Contains(r.logs.String(), "PRIVATE KEY") || bytes.Contains(r.logs.Bytes(), block.Bytes) {
 		t.Fatalf("log %q", r.logs)
+	}
+}
+
+// A name-constrained CA works for its names only, and must still load.
+func TestOwnCANameConstrainedLoads(t *testing.T) {
+	r := newOwnRig(t)
+	ca := makeCA(t, "Constrained CA", ecKey(t, elliptic.P256()), nil, func(c *x509.Certificate) {
+		c.PermittedDNSDomainsCritical = true
+		c.PermittedDNSDomains = []string{"example.test"}
+	})
+	r.upload(t, ca.pem, pkcs8(t, ca.key))
+	r.Apply(r.cfg)
+	if reason := r.stat(t)["ca_import_error"]; reason != "" {
+		t.Fatalf("a name-constrained CA was refused: %v", reason)
+	}
+	if r.stat(t)["ca_own"] != true {
+		t.Fatal("the name-constrained CA is not in use")
+	}
+}
+
+// The CA is only as long-lived as the shortest certificate above it.
+func TestOwnCAExpiresWithTheEarliestCertificate(t *testing.T) {
+	r := newOwnRig(t)
+	root := makeCA(t, "Short root", ecKey(t, elliptic.P256()), nil, func(c *x509.Certificate) {
+		c.NotAfter = time.Now().Add(10 * 24 * time.Hour)
+	})
+	signing := makeCA(t, "Long signing", ecKey(t, elliptic.P256()), root)
+	r.upload(t, append(append([]byte{}, signing.pem...), root.pem...), pkcs8(t, signing.key))
+	r.Apply(r.cfg)
+	if got := r.stat(t)["ca_expires"]; got != float64(root.cert.NotAfter.Unix()) {
+		t.Fatalf("ca_expires %v, want the root's %d", got, root.cert.NotAfter.Unix())
 	}
 }

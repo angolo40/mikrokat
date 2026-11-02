@@ -32,6 +32,7 @@ const (
 	ownLoneLimit  = 60 * time.Second
 	ownCheckName  = "own-ca-check.invalid"
 	ownRSAMaxBits = 8192 // signing with more freezes the proxy for minutes
+	ownChainMax   = 8
 )
 
 // parseOwnCA checks a certificate file and a key file and returns the CA they
@@ -64,9 +65,16 @@ func parseOwnCA(certPEM, keyPEM []byte, now time.Time) (*CA, error) {
 			return nil, fmt.Errorf("certificate %d of the chain is not valid yet", i+1)
 		}
 	}
+	if err := checkChain(chain); err != nil {
+		return nil, err
+	}
 	ca := newCA(key, first)
+	ca.expires = chain[0].NotAfter
 	for _, c := range chain {
 		ca.chain = append(ca.chain, c.Raw)
+		if c.NotAfter.Before(ca.expires) {
+			ca.expires = c.NotAfter
+		}
 	}
 	// The engine takes any failure to sign for an expired CA, so it must show
 	// here, where the reason can reach the owner.
@@ -77,7 +85,54 @@ func parseOwnCA(certPEM, keyPEM []byte, now time.Time) (*CA, error) {
 	if err != nil {
 		return nil, errors.New("this key could not sign a test certificate, RSA keys need at least 1024 bits")
 	}
+	if err := checkLeaf(chain, leaf.Leaf, now); err != nil {
+		return nil, err
+	}
 	return ca, nil
+}
+
+// checkChain refuses a chain that is too long, or whose certificates do not
+// each sign the one before: a stranger in it would stop every device.
+func checkChain(chain []*x509.Certificate) error {
+	if len(chain) > ownChainMax {
+		return fmt.Errorf("the chain has more than %d certificates", ownChainMax)
+	}
+	for i := 0; i+1 < len(chain); i++ {
+		if chain[i].CheckSignatureFrom(chain[i+1]) != nil {
+			return fmt.Errorf("certificate %d of the chain is not signed by certificate %d", i+1, i+2)
+		}
+	}
+	return nil
+}
+
+// checkLeaf verifies a certificate the CA made, the way a device would, with
+// the last certificate of the chain as its trust anchor. A CA no device would
+// accept must not show as in use. A name constraint only limits the CA to its
+// names, so that one failure is let through.
+func checkLeaf(chain []*x509.Certificate, leaf *x509.Certificate, now time.Time) error {
+	intermediates, roots := x509.NewCertPool(), x509.NewCertPool()
+	for _, c := range chain[:len(chain)-1] {
+		intermediates.AddCert(c)
+	}
+	roots.AddCert(chain[len(chain)-1])
+	_, err := leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates, CurrentTime: now,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	var bad x509.CertificateInvalidError
+	switch {
+	case err == nil:
+		return nil
+	case !errors.As(err, &bad):
+		return fmt.Errorf("devices would not accept certificates from this chain: %w", err)
+	case bad.Reason == x509.CANotAuthorizedForThisName:
+		return nil
+	case bad.Reason == x509.IncompatibleUsage:
+		return errors.New("a certificate of the chain does not allow server authentication (its extended key usage), so no device would accept it for a website")
+	case bad.Reason == x509.TooManyIntermediates || bad.Reason == x509.NotAuthorizedToSign:
+		return errors.New("a path length limit in the chain stops this CA from signing: no device would accept its certificates")
+	}
+	return fmt.Errorf("devices would not accept certificates from this chain: %w", err)
 }
 
 // parseChain returns the certificates of a PEM file, and skips anything else,
@@ -443,7 +498,7 @@ func (s *Server) loadOwn() error {
 	}
 	s.ownSeen, s.ownNews = stamp, true
 	s.Engine.CA.Store(ca)
-	s.Engine.Stats.SetCA(true, ca.cert.Subject.String(), len(ca.chain), ca.cert.NotAfter.Unix())
+	s.Engine.Stats.SetCA(true, ca.cert.Subject.String(), len(ca.chain), ca.expires.Unix())
 	log.Printf("own CA loaded: %q, %d in the chain", ca.cert.Subject.String(), len(ca.chain))
 	return nil
 }
