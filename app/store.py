@@ -55,6 +55,7 @@ settings = {
     "tls_ca_request_name": "Mikrokat Inspection CA",
     "tls_ca_request_cancel": 0,
     "tls_auto_remove": [],
+    "tls_log": True,  # keep the proxy's log of connections, and read it for the Connections page
     "router_host": os.environ.get("ROUTER_HOST", ""),
     "router_user": os.environ.get("ROUTER_USER", "mikrokat"),
     "router_password": os.environ.get("ROUTER_PASSWORD", ""),
@@ -104,7 +105,11 @@ schedule = {}
 pending_hosts = {}
 pending_peers = {}
 pending_decrypted = {}
+pending_decrypted_alerts = {}
 HOST_DAYS = 7
+CONN_DAYS = 7
+CONN_SITES_PER_HOUR = 200
+CONN_ACTIONS = ("inspected", "relayed", "refused")
 STRIKE_DAYS = 90
 lock = threading.Lock()
 pending_alerts = {}
@@ -164,6 +169,10 @@ def load():
     schedule.update(read_json(SCHEDULE_FILE, {}))
     rebuild_networks()
     write_tls_control()
+    create_tables()
+
+
+def create_tables():
     with database() as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS hourly_alerts (hour TEXT, severity INT, sid INT, signature TEXT, count INT, PRIMARY KEY (hour, sid));
@@ -172,6 +181,10 @@ def load():
             CREATE TABLE IF NOT EXISTS hourly_hosts (hour TEXT, address TEXT, sid INT, severity INT, signature TEXT, count INT, PRIMARY KEY (hour, address, sid));
             CREATE TABLE IF NOT EXISTS hourly_peers (hour TEXT, address TEXT, peer TEXT, count INT, PRIMARY KEY (hour, address, peer));
             CREATE TABLE IF NOT EXISTS hourly_decrypted (hour TEXT, address TEXT, count INT, PRIMARY KEY (hour, address));
+            CREATE TABLE IF NOT EXISTS hourly_decrypted_alerts (hour TEXT PRIMARY KEY, count INT);
+            CREATE TABLE IF NOT EXISTS hourly_conn (hour TEXT, device TEXT, action TEXT, reason TEXT, count INT, bytes INT, PRIMARY KEY (hour, device, action, reason));
+            CREATE TABLE IF NOT EXISTS hourly_sites (hour TEXT, device TEXT, name TEXT, count INT, bytes INT, PRIMARY KEY (hour, device, name));
+            CREATE TABLE IF NOT EXISTS conn_cursor (id INT PRIMARY KEY, inode INT, offset INT, head TEXT, prev TEXT);
             CREATE TABLE IF NOT EXISTS explanations (sid INT PRIMARY KEY, text TEXT, at TEXT);
             CREATE TABLE IF NOT EXISTS actions (at TEXT, address TEXT, severity INT, sid INT, signature TEXT, action TEXT, outbound INT);
         """)
@@ -187,7 +200,7 @@ def write_tls_control():
               "bypass_custom": settings["tls_bypass_saved"],
               "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"]),
               "ca_request": settings["tls_ca_request"], "ca_request_name": settings["tls_ca_request_name"],
-              "ca_request_cancel": settings["tls_ca_request_cancel"]}
+              "ca_request_cancel": settings["tls_ca_request_cancel"], "log_connections": bool(settings["tls_log"])}
     path = os.path.join(TLS_DIR, "control", "config.json")
     temp = path + ".tmp"
     try:
@@ -571,6 +584,7 @@ def save_settings(form):
                         ai_model=ai_model, ai_key=form.get("ai_key", "") or settings["ai_key"], ai_language=form.get("ai_language", "").strip()[:30] or "English")
         settings.update(oidc_enabled=oidc, oidc_issuer=oidc_issuer, oidc_client_id=oidc_client, oidc_client_secret=oidc_secret, oidc_group=oidc_group,
                         oidc_label=form.get("oidc_label", "").strip()[:30] or "SSO", oidc_scopes=form.get("oidc_scopes", "").strip() or "openid profile email")
+        settings.update(tls_log=bool(form.get("tls_log")))
         settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices)
         if "tls_bypass" in form:
             # The field holds the whole list, defaults included, unless the page could not read them.
@@ -649,6 +663,8 @@ def count_alert(event, address, country=""):
     if country:
         key = (hour, country)
         pending_countries[key] = pending_countries.get(key, 0) + 1
+    if is_decrypted(event):
+        pending_decrypted_alerts[hour] = pending_decrypted_alerts.get(hour, 0) + 1
     source, destination = event.get("src_ip"), event.get("dest_ip")
     for side, peer in ((source, destination), (destination, source)):
         if side and peer:
@@ -666,6 +682,8 @@ def flush():
         return
     alerts, addresses, countries = dict(pending_alerts), dict(pending_addresses), dict(pending_countries)
     hosts, peers, decrypted = dict(pending_hosts), dict(pending_peers), dict(pending_decrypted)
+    decrypted_alerts = dict(pending_decrypted_alerts)
+    pending_decrypted_alerts.clear()
     pending_alerts.clear()
     pending_addresses.clear()
     pending_countries.clear()
@@ -691,6 +709,8 @@ def flush():
         db.executemany("""INSERT INTO hourly_decrypted VALUES (?, ?, ?)
                           ON CONFLICT (hour, address) DO UPDATE SET count = count + excluded.count""",
                        [(*k, v) for k, v in decrypted.items()])
+        db.executemany("""INSERT INTO hourly_decrypted_alerts VALUES (?, ?)
+                          ON CONFLICT (hour) DO UPDATE SET count = count + excluded.count""", list(decrypted_alerts.items()))
 
 
 def record_action(address, alert, action, outbound):
@@ -707,6 +727,10 @@ def prune():
         db.execute("DELETE FROM hourly_hosts WHERE hour < ?", (recent,))
         db.execute("DELETE FROM hourly_peers WHERE hour < ?", (recent,))
         db.execute("DELETE FROM hourly_decrypted WHERE hour < ?", (recent,))
+        db.execute("DELETE FROM hourly_decrypted_alerts WHERE hour < ?", (recent,))
+        conn_limit = time.strftime("%Y-%m-%d %H", time.localtime(time.time() - CONN_DAYS * 86400))
+        db.execute("DELETE FROM hourly_conn WHERE hour < ?", (conn_limit,))
+        db.execute("DELETE FROM hourly_sites WHERE hour < ?", (conn_limit,))
         db.execute("DELETE FROM hourly_alerts WHERE hour < ?", (limit,))
         db.execute("DELETE FROM hourly_addresses WHERE hour < ?", (limit,))
         db.execute("DELETE FROM hourly_countries WHERE hour < ?", (limit,))
@@ -803,3 +827,231 @@ def actions_today():
 def rule_names():
     with database() as db:
         return dict(db.execute("SELECT sid, MAX(signature) FROM hourly_alerts GROUP BY sid").fetchall())
+
+
+def decrypted_alerts(days=1):
+    """Return how many alerts came from decrypted traffic in the last days. Each alert counts once."""
+    with database() as db:
+        return db.execute("SELECT COALESCE(SUM(count), 0) FROM hourly_decrypted_alerts WHERE hour >= ?", (conn_since(days),)).fetchone()[0]
+
+
+# The connection log of the TLS proxy. It holds what the proxy did with each connection and never any content.
+CONN_CHUNK = 4 * 2**20
+CONN_TAIL = 2 * 2**20
+CONN_RECENT = 200
+
+
+def conn_path():
+    return os.path.join(TLS_DIR, "state", "connections.jsonl")
+
+
+def conn_record(text):
+    """Return a log line as a clean dict, or None when it is not a record we understand."""
+    try:
+        r = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(r, dict):
+        return None
+
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    at, up, down = r.get("at"), count(r.get("up")), count(r.get("down"))
+    if not isinstance(at, int) or isinstance(at, bool) or at <= 0 or up is None or down is None or r.get("action") not in CONN_ACTIONS:
+        return None
+    text_fields = {key: r.get(key, "") for key in ("device", "name", "ip", "reason")}
+    if not all(isinstance(v, str) for v in text_fields.values()) or not text_fields["device"]:
+        return None
+    return {"at": at, "up": up, "down": down, "action": r["action"], "port": count(r.get("port")) or 0, "ms": count(r.get("ms")) or 0,
+            **{k: v[:253] for k, v in text_fields.items()}}
+
+
+def conn_read(path, offset):
+    """Return the records after offset and the offset after the last whole line. A half-written line waits."""
+    try:
+        with open(path, "rb") as source:
+            source.seek(offset)
+            data = source.read(CONN_CHUNK)
+    except OSError:
+        return [], offset
+    end = data.rfind(b"\n") + 1
+    if end == 0 and len(data) >= CONN_CHUNK:
+        end = len(data)  # one line longer than any record: skip it
+    records = [conn_record(line) for line in data[:end].decode("utf-8", "replace").splitlines()]
+    return [r for r in records if r], offset + end
+
+
+def conn_head(path):
+    """The first bytes of a file, which tell it from another file that got the same inode."""
+    try:
+        with open(path, "rb") as source:
+            return source.read(256).hex()
+    except OSError:
+        return ""
+
+
+def conn_same(inode, head, other_inode, other_head):
+    """True when two looks at a file are of the same file. A file only grows, so one head starts with the other."""
+    return inode == other_inode and (head.startswith(other_head) or other_head.startswith(head))
+
+
+def prev_identity(text):
+    inode, _, head = text.partition(":")
+    return (int(inode) if inode.isdigit() else None), head
+
+
+def read_connections():
+    """Add the new lines of the proxy's log to the hourly tables. Return how many records it took.
+
+    The place it stopped is kept in the database, in the same transaction as the counts, so a restart neither
+    loses nor repeats a line. A rotation is told by the inode: the rest of the old file, now .1, comes first.
+    """
+    path = conn_path()
+    try:
+        current = os.stat(path)
+    except OSError:
+        return 0
+    with database() as db:
+        saved = db.execute("SELECT inode, offset, head, prev FROM conn_cursor WHERE id = 1").fetchone()
+    head = conn_head(path)
+    inode, offset, old_head, prev = saved if saved else (None, 0, "", "")
+    if inode is None:
+        steps = [(path + ".1", 0), (path, 0)]
+    elif not conn_same(inode, old_head, current.st_ino, head):
+        # Rotated, or replaced. An inode can be reused, so the first bytes are compared too.
+        steps = [(path, 0)]
+        try:
+            backup = os.stat(path + ".1").st_ino, conn_head(path + ".1")
+            if conn_same(inode, old_head, *backup):
+                steps.insert(0, (path + ".1", offset))
+            elif not conn_same(*prev_identity(prev), *backup):  # a file we never followed, born after our place in the old one
+                steps.insert(0, (path + ".1", 0))
+        except OSError:
+            pass
+        prev = f"{inode}:{old_head}"
+    else:
+        steps = [(path, offset if offset <= current.st_size else 0)]
+    records, new_offset = [], offset
+    for step_path, step_offset in steps:
+        while True:
+            found, after = conn_read(step_path, step_offset)
+            records += found
+            progress = after > step_offset
+            step_offset = after
+            if step_path == path:
+                new_offset = after
+            try:
+                done = after >= os.path.getsize(step_path)
+            except OSError:
+                done = True
+            if not progress or done:
+                break
+    cutoff = time.time() - CONN_DAYS * 86400
+    records = [r for r in records if r["at"] >= cutoff]
+    counts, sites = {}, {}
+    for r in records:
+        hour = time.strftime("%Y-%m-%d %H", time.localtime(r["at"]))
+        size = r["up"] + r["down"]
+        c = counts.setdefault((hour, r["device"], r["action"], r["reason"]), [0, 0])
+        c[0] += 1
+        c[1] += size
+        if r["action"] != "refused" and r["name"]:
+            c = sites.setdefault((hour, r["device"], r["name"]), [0, 0])
+            c[0] += 1
+            c[1] += size
+    with database() as db:
+        db.executemany("""INSERT INTO hourly_conn VALUES (?, ?, ?, ?, ?, ?)
+                          ON CONFLICT (hour, device, action, reason) DO UPDATE SET count = count + excluded.count, bytes = bytes + excluded.bytes""",
+                       [(*k, *v) for k, v in counts.items()])
+        db.executemany("""INSERT INTO hourly_sites VALUES (?, ?, ?, ?, ?)
+                          ON CONFLICT (hour, device, name) DO UPDATE SET count = count + excluded.count, bytes = bytes + excluded.bytes""",
+                       [(*k, *v) for k, v in sites.items()])
+        for hour in {k[0] for k in sites}:
+            db.execute("""DELETE FROM hourly_sites WHERE hour = ? AND rowid NOT IN
+                          (SELECT rowid FROM hourly_sites WHERE hour = ? ORDER BY bytes DESC, count DESC, name LIMIT ?)""", (hour, hour, CONN_SITES_PER_HOUR))
+        db.execute("INSERT OR REPLACE INTO conn_cursor VALUES (1, ?, ?, ?, ?)", (current.st_ino, new_offset, head, prev))
+    return len(records)
+
+
+def conn_since(days):
+    return since_yesterday() if days == 1 else time.strftime("%Y-%m-%d %H", time.localtime(time.time() - days * 86400))
+
+
+def conn_hourly():
+    """Return 24 (label, inspected, passed) rows, oldest first, including empty hours."""
+    hours = [time.strftime("%Y-%m-%d %H", time.localtime(time.time() - i * 3600)) for i in range(23, -1, -1)]
+    with database() as db:
+        rows = db.execute("""SELECT hour, SUM(CASE WHEN action = 'inspected' THEN count ELSE 0 END), SUM(CASE WHEN action = 'relayed' THEN count ELSE 0 END)
+                             FROM hourly_conn WHERE hour >= ? GROUP BY hour""", (hours[0],)).fetchall()
+    found = {r[0]: r[1:] for r in rows}
+    return [(h[-2:] + ":00", *found.get(h, (0, 0))) for h in hours]
+
+
+def conn_totals(days=1):
+    """Return the connections by action and the bytes through the proxy. Refused connections carry none."""
+    with database() as db:
+        rows = db.execute("SELECT action, SUM(count), SUM(bytes) FROM hourly_conn WHERE hour >= ? GROUP BY action", (conn_since(days),)).fetchall()
+    out = {"inspected": 0, "relayed": 0, "refused": 0, "bytes": 0}
+    for action, count, size in rows:
+        out[action] = int(count)
+        out["bytes"] += int(size)
+    return out
+
+
+def conn_reasons():
+    """Return (action, reason, connections, bytes) for the last 24 hours, relayed and refused, biggest first."""
+    with database() as db:
+        return db.execute("""SELECT action, reason, SUM(count) AS total, SUM(bytes) FROM hourly_conn WHERE hour >= ? AND action != 'inspected'
+                             GROUP BY action, reason ORDER BY total DESC, action DESC, reason""", (conn_since(1),)).fetchall()
+
+
+def conn_sites(by="count", limit=10):
+    """Return (name, connections, bytes) for the last 24 hours, biggest first."""
+    order = "SUM(bytes) DESC, SUM(count) DESC" if by == "bytes" else "SUM(count) DESC, SUM(bytes) DESC"
+    with database() as db:
+        return db.execute(f"SELECT name, SUM(count), SUM(bytes) FROM hourly_sites WHERE hour >= ? GROUP BY name ORDER BY {order}, name LIMIT ?",
+                          (conn_since(1), limit)).fetchall()
+
+
+def conn_devices(limit=20):
+    """Return (device, bytes, connections) for the last 24 hours, the biggest first. Refused sources are left out."""
+    with database() as db:
+        return db.execute("""SELECT device, SUM(bytes) AS size, SUM(count) FROM hourly_conn WHERE hour >= ? AND action != 'refused'
+                             GROUP BY device ORDER BY size DESC, device LIMIT ?""", (conn_since(1), limit)).fetchall()
+
+
+def conn_devices_seen():
+    """Return every device with a connection in the last 24 hours, for the filter."""
+    with database() as db:
+        return [r[0] for r in db.execute("SELECT DISTINCT device FROM hourly_conn WHERE hour >= ? ORDER BY device", (conn_since(1),))]
+
+
+def conn_tail(path, size):
+    """Return the last size bytes of path as whole lines, or [] if it cannot be read."""
+    try:
+        with open(path, "rb") as source:
+            length = source.seek(0, os.SEEK_END)
+            start = max(0, length - size)
+            source.seek(start)
+            data = source.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[1:] if start and lines else lines
+
+
+def conn_recent(device="", site="", limit=CONN_RECENT):
+    """Return the latest records from the log itself, newest first, optionally of one device and with a part of the site name."""
+    lines = conn_tail(conn_path(), CONN_TAIL)
+    if len(lines) < 4000:
+        lines = conn_tail(conn_path() + ".1", CONN_TAIL) + lines
+    site = site.lower()
+    out = []
+    for text in reversed(lines):
+        r = conn_record(text)
+        if r and (not device or r["device"] == device) and (not site or site in r["name"].lower()):
+            out.append(r)
+            if len(out) >= limit:
+                break
+    return out

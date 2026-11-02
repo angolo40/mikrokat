@@ -147,6 +147,13 @@ svg line { stroke: var(--line); }
 svg rect.hit { fill: transparent; }
 svg rect.hit:hover { fill: var(--raised); }
 .bar-1 { fill: var(--series-1); } .bar-2 { fill: var(--series-2); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.legend i.s1 { background: var(--series-1); } .legend i.s2 { background: var(--series-2); }
+a.tile { display: block; color: inherit; text-decoration: none; } a.tile:hover { border-color: var(--accent); text-decoration: none; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 10px; } .filters select { width: auto; max-width: 260px; }
+.total { margin: 14px 2px 0; color: var(--muted); font-size: 13px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -307,6 +314,53 @@ def bar_chart(title, labels, values, series):
     return f'<section class="panel half"><h2>{esc(title)}</h2><p>Last 24 hours</p>{"".join(parts)}</section>'
 
 
+def file_size(value):
+    for limit, suffix in ((2**30, "GB"), (2**20, "MB"), (2**10, "kB")):
+        if value >= limit:
+            return f"{value / limit:.1f} {suffix}"
+    return f"{int(value)} B"
+
+
+def stack_chart(title, labels, first, second, names, size="half", hint="Last 24 hours"):
+    """Thin stacked bars for 24 hours, two series with a legend. A 2px gap in the surface colour separates the two."""
+    width, height, left, bottom, top_gap = 480, 170, 36, 22, 8
+    plot = height - bottom - top_gap
+    band = (width - left) / len(labels)
+    bar = min(14, band * 0.6)
+    totals = [a + b for a, b in zip(first, second)]
+    top = nice_top(max(totals))
+    base = top_gap + plot
+
+    def segment(x, y, bottom_y, round_top, series):
+        r = min(4.0, bar / 2, bottom_y - y) if round_top else 0
+        return (f'<path class="bar-{series}" pointer-events="none" d="M{x:.1f} {bottom_y:.1f}V{y + r:.1f}Q{x:.1f} {y:.1f} {x + r:.1f} {y:.1f}'
+                f'H{x + bar - r:.1f}Q{x + bar:.1f} {y:.1f} {x + bar:.1f} {y + r:.1f}V{bottom_y:.1f}Z"/>')
+
+    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="{esc(title)}, peak {max(totals)} in one hour">']
+    for share in (0, 0.5, 1):
+        y = top_gap + plot * (1 - share)
+        parts.append(f'<line x1="{left}" x2="{width}" y1="{y:.1f}" y2="{y:.1f}"/>'
+                     f'<text x="{left - 6}" y="{y + 4:.1f}" text-anchor="end">{short_number(top * share)}</text>')
+    for i, label in enumerate(labels):
+        x = left + band * i
+        a, b = first[i], second[i]
+        parts.append(f'<rect class="hit" x="{x:.1f}" y="{top_gap}" width="{band:.1f}" height="{plot}"><title>{esc(label)}: {number(int(a))} {esc(names[0].lower())}, '
+                     f'{number(int(b))} {esc(names[1].lower())}</title></rect>')
+        bx = x + (band - bar) / 2
+        low = max(2.0, plot * a / top) if a else 0
+        high = max(2.0, plot * b / top) if b else 0
+        if a:
+            parts.append(segment(bx, base - low, base, not b, 1))
+        if b:
+            lift = low + 2 if a else 0  # the gap
+            parts.append(segment(bx, base - lift - high, base - lift, True, 2))
+        if i % 6 == 0:
+            parts.append(f'<text x="{x + band / 2:.1f}" y="{height - 6}" text-anchor="middle">{esc(label)}</text>')
+    parts.append("</svg>")
+    legend = f'<div class="legend"><span><i class="s1"></i>{esc(names[0])}</span><span><i class="s2"></i>{esc(names[1])}</span></div>'
+    return f'<section class="panel {size}"><h2>{esc(title)}</h2><p>{esc(hint)}</p>{legend}{"".join(parts)}</section>'
+
+
 def events_base(host):
     return EVEBOX_URL or f"http://{host.split(':')[0]}:{EVENTS_PORT}"
 
@@ -379,6 +433,8 @@ def button(path, fields, label, back=""):
 def layout(active, title, body, host, notice="", error=""):
     events = events_base(host)
     links = [("/", "Overview"), ("/live", "Live"), ("/blocked", "Blocked"), ("/rules", "Rules"), ("/allowlist", "Allowlist"), ("/settings", "Settings")]
+    if store.settings["tls_enabled"]:
+        links.insert(2, ("/connections", "Connections"))
     nav = "".join(f'<a href="{p}"{" class=on" if p == active else ""}>{n}</a>' for p, n in links)
     nav += f'<a href="{esc(events, quote=True)}" target="_blank" rel="noopener">Events ↗</a>'
     leave = f'<form method="post" action="/logout">{hidden()}<button class="quiet">Sign out</button></form>'
@@ -419,6 +475,15 @@ def tile(value, label):
     return f'<div class="tile"><b>{esc(str(value))}</b><span>{esc(label)}</span></div>'
 
 
+def overview_tile():
+    """The tile that opens the Connections page, only while HTTPS inspection is on."""
+    if not store.settings["tls_enabled"]:
+        return ""
+    count = store.conn_totals(1)["inspected"]
+    return (f'<a class="tile" href="/connections" title="Connections inspected in the last 24 hours. Open the Connections page.">'
+            f'<b>{esc(number(count))}</b><span>Decrypted, 24h</span></a>')
+
+
 def overview_page(host, notice="", error=""):
     series = store.hourly_series()
     labels = [r[0] for r in series]
@@ -443,7 +508,7 @@ def overview_page(host, notice="", error=""):
         tile(number(store.actions_today()), "Blocked, 24h" if blocking else "Would block, 24h"),
         tile(number(now_blocked), "On the block list now"),
         tile(short_number(sum(info)), "Informational, 24h"),
-    ])
+    ]) + overview_tile()
     hours = table(["Hour", "Important", "Informational"], [[esc(r[0]), number(int(r[1])), number(int(r[2]))] for r in reversed(series)], "", (1, 2))
     rows = [[severity_badge(sev), rule_link(host, sid, sig), number(int(total)),
              explain_button(sid) + button("/ignore", {"sid": sid}, "Mute", "/") + button("/rules/disable", {"entry": sid}, "Turn off", "/")]
@@ -465,6 +530,99 @@ def overview_page(host, notice="", error=""):
             + panel("Hourly numbers", f'<details><summary class="muted">Show as a table</summary>{hours}</details>')
             + "</div>")
     return layout("/", "Overview", body, host, notice, error)
+
+
+PASSED_REASONS = {
+    "not_443": "Not port 443",
+    "ipv6": "IPv6, which the proxy cannot rebuild",
+    "private": "Private address",
+    "not_tls": "Not TLS",
+    "no_name": "No server name sent",
+    "bypass": "Name on the skip list",
+    "auto_bypass": "Skipped automatically after a refusal",
+    "ca_expired": "The CA has expired",
+    "upstream": "The site's certificate failed the checks",
+}
+REFUSED_REASONS = {
+    "not_listed": "Not on the device list",
+    "cap": "Too many connections",
+    "destination": "Destination not allowed",
+}
+
+
+def reason_label(action, reason):
+    if action == "refused":
+        return "Refused: " + REFUSED_REASONS.get(reason, reason or "unknown")
+    return PASSED_REASONS.get(reason, reason or "unknown")
+
+
+def result_label(action, reason):
+    if action == "inspected":
+        return "Inspected"
+    return ("Refused: " if action == "refused" else "Passed: ") + (REFUSED_REASONS if action == "refused" else PASSED_REASONS).get(reason, reason or "unknown")
+
+
+def millis(value):
+    return f"{value} ms" if value < 1000 else f"{value / 1000:.1f} s" if value < 60000 else f"{value // 60000} min {value % 60000 // 1000} s"
+
+
+def connections_page(host, notice="", error="", query=None):
+    """What went through the HTTPS proxy and what it did. Names come from client traffic, so everything is escaped."""
+    query = query or {}
+    device = query.get("device", [""])[0][:64]
+    site = query.get("site", [""])[0][:100]
+    totals, week = store.conn_totals(1), store.conn_totals(7)
+    through = totals["inspected"] + totals["relayed"]
+    unfiltered = store.conn_recent(limit=1)
+    if not through and not totals["refused"] and not unfiltered:
+        off = "" if store.settings["tls_log"] else " The log is off: turn on Keep a log of connections."
+        how = (f'<p>Nothing has passed through the proxy in the last 24 hours.{esc(off)}</p>'
+               '<p class="muted">To see connections here, turn on HTTPS inspection and Keep a log of connections under '
+               '<a href="/settings?tab=https">Settings, HTTPS inspection</a>, list a device, and set the proxy in that device\'s browser. '
+               'Only traffic that goes through the proxy is shown, not the whole network.</p>')
+        return layout("/connections", "Connections", panel("No connections yet", how), host, notice, error)
+    series = store.conn_hourly()
+    share = lambda part: f"{round(part * 100 / through)}%" if through else "0%"
+    tiles = "".join([
+        tile(number(through), "Connections, 24h"),
+        tile(share(totals["inspected"]), "Inspected share"),
+        tile(share(totals["relayed"]), "Passed share"),
+        tile(file_size(totals["bytes"]), "Data through the proxy"),
+        tile(number(store.decrypted_alerts()), "Alerts on decrypted traffic, 24h"),
+    ])
+    why = [[esc(reason_label(a, r)), number(int(c)), esc(file_size(b))] for a, r, c, b in store.conn_reasons()]
+    by_count = [[esc(n), number(int(c)), esc(file_size(b))] for n, c, b in store.conn_sites("count")]
+    by_data = [[esc(n), esc(file_size(b)), number(int(c))] for n, c, b in store.conn_sites("bytes")]
+    devices = [[host_link(d), esc(file_size(b)), number(int(c))] for d, b, c in store.conn_devices()]
+    skipped = store.tls_status().get("auto_bypass")
+    auto = [[host_link(str(e.get("device", ""))), esc(str(e.get("name", ""))),
+             esc(time.strftime("%H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) and not isinstance(e.get("until"), bool) else ""]
+            for e in (skipped if isinstance(skipped, list) else []) if isinstance(e, dict)]
+    recent = store.conn_recent(device, site)
+    rows = [[f'<span class="when-text">{esc(time.strftime("%m-%d %H:%M:%S", time.localtime(r["at"])))}</span>', host_link(r["device"]), esc(r["name"] or "-"),
+             esc(f'{r["ip"]}:{r["port"]}' if r["ip"] else "-"), esc(result_label(r["action"], r["reason"])), esc(file_size(r["up"])), esc(file_size(r["down"])), esc(millis(r["ms"]))]
+            for r in recent]
+    options = '<option value="">All devices</option>' + "".join(
+        f'<option value="{esc(d, quote=True)}"{" selected" if d == device else ""}>{esc(store.name_of(d) + " " + d if store.name_of(d) else d)}</option>'
+        for d in dict.fromkeys(store.conn_devices_seen() + ([device] if device else [])))
+    form = (f'<form class="filters" method="get" action="/connections"><select name="device" aria-label="Device">{options}</select>'
+            f'<input name="site" value="{esc(site, quote=True)}" placeholder="Part of a site name" aria-label="Site" maxlength="100">'
+            f'<button class="quiet">Filter</button><a href="/connections">Clear</a></form>')
+    latest = form + table(["Time", "Device", "Site", "Address", "Result", "Up", "Down", "Duration"], rows,
+                          "Nothing matches these filters." if device or site else "No connections in the log yet.", (5, 6))
+    foot = (f'<p class="total">Last 7 days: {esc(number(week["inspected"] + week["relayed"]))} connections '
+            f'({esc(number(week["inspected"]))} inspected, {esc(number(week["relayed"]))} passed), {esc(file_size(week["bytes"]))} through the proxy, '
+            f'{esc(number(week["refused"]))} refused. Only traffic that went through the proxy is counted, not the whole network, and no URLs or content are kept.</p>')
+    body = (f'<div class="tiles">{tiles}</div><div class="panels">'
+            + stack_chart("Connections per hour", [r[0] for r in series], [int(r[1]) for r in series], [int(r[2]) for r in series], ("Inspected", "Passed"), "rest")
+            + panel("Why connections passed", table(["Reason", "Connections", "Data"], why, "Nothing passed untouched.", (1, 2)), "Last 24 hours, refused ones included.", size="third")
+            + panel("Top sites by connections", table(["Site", "Connections", "Data"], by_count, "No sites yet.", (1, 2)), "Last 24 hours.", size="half")
+            + panel("Top sites by data", table(["Site", "Data", "Connections"], by_data, "No sites yet.", (1, 2)), "Last 24 hours.", size="half")
+            + panel("Data per device", table(["Device", "Data", "Connections"], devices, "No devices yet.", (1, 2)), "Last 24 hours.", size="half")
+            + panel("Skipped automatically", table(["Device", "Name", "Until"], auto, "Nothing was skipped automatically."), "From the proxy, for 24 hours after a device refuses the certificate.", size="half")
+            + panel("Recent connections", latest, "The latest 200 from the log, newest first.")
+            + "</div>" + foot)
+    return layout("/connections", "Connections", body, host, notice, error)
 
 
 def host_page(host, ip):
@@ -651,6 +809,7 @@ GUIDE = """<aside class="guide">
 <p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac. Tick Proxy DNS when using SOCKS v5, so the proxy looks up each name.</p>
 <p>If you run your own root CA, the safest way is Create a key here on that tab: the proxy makes the key, you download the request and sign it on your machine with the command shown, and you upload the certificate. The key never crosses the network and your root key never leaves your machine.</p>
 <p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
+<p>The Connections page shows what the proxy did with each connection: which site, from which device, whether it was inspected or passed untouched and why, and how many bytes. It shows never URLs or content, and only traffic that went through the proxy, not the whole network. The proxy keeps the log in two files of 5 MiB, so at most 10 MiB, and the page keeps its statistics for 7 days. Keep a log of connections on the HTTPS inspection tab turns it off.</p>
 <p>Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
 </aside>"""
 
@@ -789,6 +948,9 @@ def https_card(host, switch, field):
                '<p class="note">The list under Never inspect these names starts with a few banks, health and public services, and update services. Any other bank, payment or health site is decrypted unless you add it there first.</p>')
     options = (switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + '<div class="reveal">'
                + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
+               + switch("tls_log", "Keep a log of connections", s["tls_log"])
+               + '<p class="hint">This log shows which sites each listed device visited, so the consent note above applies. It holds no URLs or content. '
+               'See it on the <a href="/connections">Connections page</a>.</p>'
                + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
                f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
                f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
@@ -1039,7 +1201,8 @@ def login_page(error=""):
             f'<button>Sign in</button></form></section></main></body></html>')
 
 
-PAGES = {"/": overview_page, "/live": live_page, "/blocked": blocked_page, "/rules": rules_page, "/allowlist": allowlist_page, "/settings": settings_page}
+PAGES = {"/": overview_page, "/live": live_page, "/blocked": blocked_page, "/rules": rules_page, "/allowlist": allowlist_page, "/settings": settings_page,
+         "/connections": connections_page}
 
 
 def manual_block(form):
@@ -1246,6 +1409,8 @@ class Handler(BaseHTTPRequestHandler):
         host = self.headers.get("Host", "localhost")
         if page is settings_page:
             self.reply(settings_page(host, NOTICES.get(code, ""), "", query.get("tab", [""])[0]))
+        elif page is connections_page:
+            self.reply(connections_page(host, NOTICES.get(code, ""), "", query))
         else:
             self.reply(page(host, NOTICES.get(code, "")))
 

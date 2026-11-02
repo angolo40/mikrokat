@@ -160,12 +160,18 @@ def main():
     actions.start_delivery()
     health.start()
     log(f"mode={store.settings['mode']} severities={store.settings['severities']} channels={[n for n, (on, _) in actions.CHANNELS.items() if store.settings[on]]}")
-    last_flush = last_clean = 0
+    last_flush = last_clean = last_conn = 0
     for record in follow():
         now = time.time()
         if now - last_flush > 5:
             store.flush()
             last_flush = now
+        if now - last_conn > 30:
+            last_conn = now
+            try:
+                store.read_connections()
+            except Exception as error:
+                log("connection log not read:", error.__class__.__name__)
         if record is None:
             time.sleep(0.5)
             if now - last_clean > 3600:

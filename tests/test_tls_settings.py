@@ -87,7 +87,7 @@ class TlsSettings(Base):
         self.assertIsNone(error)
         self.assertEqual(self.control(), {"enabled": True, "socks": True, "socks_port": 1080, "devices": ["10.0.0.5", "fe80::1"],
                                           "bypass": ["bank.example.com", "*.pay.example"], "ca_generation": 0, "auto_remove": [],
-                                          "ca_request": 0, "ca_request_name": "Mikrokat Inspection CA", "ca_request_cancel": 0, "bypass_custom": True})
+                                          "ca_request": 0, "ca_request_name": "Mikrokat Inspection CA", "ca_request_cancel": 0, "bypass_custom": True, "log_connections": False})
 
     def test_status_survives_bad_json(self):
         self.assertEqual(store.tls_status(), {})
