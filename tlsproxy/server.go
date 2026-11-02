@@ -248,7 +248,7 @@ func (s *Server) loadCA(generation int) error {
 		return err
 	}
 	s.Engine.CA.Store(ca)
-	s.Engine.Stats.SetCAExpires(ca.cert.NotAfter.Unix())
+	s.Engine.Stats.SetCA(false, ca.cert.Subject.String(), 1, ca.cert.NotAfter.Unix())
 	s.caGen = generation
 	log.Printf("CA generation %d loaded", generation)
 	return nil

@@ -20,7 +20,8 @@ func TestStatsFile(t *testing.T) {
 	s.Copied(5)
 	s.CopyDropped()
 	s.SetListening(false, "port taken")
-	s.SetCAExpires(1234)
+	s.SetCA(true, "CN=Own", 2, 1234)
+	s.SetImportError("the key is damaged")
 	if err := s.WriteFile(p, []AutoEntry{{Device: "192.0.2.5", Name: "x", Until: 99}}); err != nil {
 		t.Fatal(err)
 	}

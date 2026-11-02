@@ -28,6 +28,10 @@ type Stats struct {
 	listening  bool
 	problem    string
 	caExpires  int64
+	caOwn      bool
+	caSubject  string
+	caChain    int
+	importErr  string
 }
 
 // NewStats returns counters whose start time is now.
@@ -85,10 +89,20 @@ func (s *Stats) SetListening(listening bool, problem string) {
 	s.mu.Unlock()
 }
 
-// SetCAExpires records when the loaded CA expires, in Unix seconds.
-func (s *Stats) SetCAExpires(at int64) {
+// SetCA records the CA in use: whether it is an uploaded one, its subject, how
+// many certificates its chain has, and when it expires, in Unix seconds. An
+// uploaded CA that cannot be loaded has an empty subject.
+func (s *Stats) SetCA(own bool, subject string, chain int, expires int64) {
 	s.mu.Lock()
-	s.caExpires = at
+	s.caOwn, s.caSubject, s.caChain, s.caExpires = own, subject, chain, expires
+	s.mu.Unlock()
+}
+
+// SetImportError records why the last upload failed. The next good upload
+// clears it.
+func (s *Stats) SetImportError(reason string) {
+	s.mu.Lock()
+	s.importErr = reason
 	s.mu.Unlock()
 }
 
@@ -105,6 +119,10 @@ type statsFile struct {
 	Listening  bool             `json:"listening"`
 	Error      string           `json:"error"`
 	CAExpires  int64            `json:"ca_expires"`
+	CAOwn      bool             `json:"ca_own"`
+	CASubject  string           `json:"ca_subject"`
+	CAChain    int              `json:"ca_chain"`
+	ImportErr  string           `json:"ca_import_error"`
 }
 
 // WriteFile writes the counters to path through a temporary file and a rename,
@@ -124,6 +142,10 @@ func (s *Stats) WriteFile(path string, auto []AutoEntry) error {
 		Listening:  s.listening,
 		Error:      s.problem,
 		CAExpires:  s.caExpires,
+		CAOwn:      s.caOwn,
+		CASubject:  s.caSubject,
+		CAChain:    s.caChain,
+		ImportErr:  s.importErr,
 	}
 	for k, v := range s.relayed {
 		f.Relayed[k] = v
