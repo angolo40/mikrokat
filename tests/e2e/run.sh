@@ -294,6 +294,7 @@ measure() {
   echo "RAM off: $(ram), peak $(peak_mb) MB"
   feature on
   wait_for 30 port_open || fail "port 1080 did not open"
+  profile_removed_check
   cp data/tls/state/ca.pem "$E2E_WORK/ca.pem"
   sleep 3
 
@@ -843,6 +844,21 @@ profile_off_check() {
   fi
   "${COMPOSE[@]}" up -d --force-recreate --no-deps mikrokat tlsproxy </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start again with the profile: $(tail -3 "$E2E_WORK/build.log")"
   wait_for 60 app_up || fail "the app did not come back with the profile"
+}
+
+# Compose leaves a running container alone when its profile goes, and the tab to stop the proxy goes with the profile. So the app has to stop it, or it would go on decrypting.
+profile_removed_check() {
+  check "A running proxy stops inspecting when the profile goes"
+  port_open || fail "port 1080 is not open before this check"
+  COMPOSE_PROFILES= docker compose up -d --force-recreate --no-deps mikrokat </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start without the profile: $(tail -3 "$E2E_WORK/build.log")"
+  wait_for 60 app_up || fail "the app did not answer without the profile"
+  [ -n "$(docker ps -q --filter name=mikrokat-tlsproxy </dev/null)" ] || fail "the proxy is gone, so this check proves nothing"
+  control_says false || fail "the control file still switches the proxy on"
+  wait_for 30 port_closed || fail "port 1080 stayed open after the profile went"
+  "${COMPOSE[@]}" up -d --force-recreate --no-deps mikrokat tlsproxy </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start again with the profile: $(tail -3 "$E2E_WORK/build.log")"
+  wait_for 60 app_up || fail "the app did not come back with the profile"
+  wait_for 30 port_open || fail "port 1080 did not open again with the saved switch"
+  echo "port 1080 closed with the container still running, and opened again with the profile"
 }
 
 trap 'fail interrupted' INT TERM

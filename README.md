@@ -100,7 +100,8 @@ To skip the questions, set the answers as variables. With a variable set the scr
 | `var_https` | `no` | `yes` enables the HTTPS inspection beta |
 
 ```sh
-var_ctid=120 var_ip=192.0.2.20/24 var_gateway=192.0.2.1 var_router_ip=192.0.2.1 bash proxmox-lxc.sh
+var_ctid=120 var_ip=192.0.2.20/24 var_gateway=192.0.2.1 var_router_ip=192.0.2.1 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/angolo40/mikrokat/main/tools/proxmox-lxc.sh)"
 ```
 
 The log is `/var/log/mikrokat-lxc-<ctid>.log` on the Proxmox host. It holds no password. If a step fails, the script says which and leaves the container for you to look at. It never deletes anything.
@@ -108,8 +109,10 @@ The log is `/var/log/mikrokat-lxc-<ctid>.log` on the Proxmox host. It holds no p
 To update to the latest release, keeping `.env`, `rules` and `data`:
 
 ```sh
-bash proxmox-lxc.sh update <ctid>
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/angolo40/mikrokat/main/tools/proxmox-lxc.sh)" _ update <ctid>
 ```
+
+Put `var_https=yes` or `var_https=no` in front of that command to turn the HTTPS inspection beta on or off.
 
 ### By hand, on any Docker host
 
@@ -212,7 +215,14 @@ A clean install does not have it: there is no proxy container, no HTTPS inspecti
 COMPOSE_PROFILES=https
 ```
 
-The proxy container is then built and started, and the tab appears in Settings. To turn it off again, empty the line and run `docker compose up -d --remove-orphans`. Your settings on the tab stay saved while it is off, but nothing is inspected, `/tls.pac` answers direct and the health alarms for the proxy stay quiet.
+The proxy container is then built and started, and the tab appears in Settings. To turn it off again, empty the line and run:
+
+```sh
+docker compose up -d
+docker compose --profile https rm -sf tlsproxy
+```
+
+The first command restarts the app, which tells the proxy to stop inspecting. The second removes the proxy, because Compose leaves a running container alone when its profile goes. Your settings on the tab stay saved while it is off, but nothing is inspected, `/tls.pac` answers direct and the health alarms for the proxy stay quiet.
 
 Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate chain, name and dates, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It makes a copy of the traffic in memory and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
 

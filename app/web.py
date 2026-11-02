@@ -271,7 +271,6 @@ textarea.tall { height: calc(13px * 1.5 * 10 + 22px); line-height: 1.5; resize: 
 #pane-https > p.note { margin-bottom: 14px; }
 #pane-https .status { margin-bottom: 6px; gap: 6px 16px; }
 #pane-https .status .state { margin-right: 0; }
-#pane-https .status a { margin-left: auto; }
 #pane-https textarea[name=tls_devices] { min-height: 96px; }
 #pane-https .status a { font-size: 13px; }
 #pane-https .fine { margin: 0 2px 16px; }
@@ -1117,7 +1116,6 @@ def https_status(s, stats):
                 + f'<span class="fact">Refused <b>{esc(str(stats.get("refused", 0)))}</b>{last_text}</span>')
         if isinstance(stats.get("at"), int):
             row += f'<span class="fact">Updated <b>{max(int(time.time()) - stats["at"], 0)} s ago</b></span>'
-    row += '<a href="/connections">Connections</a>'
     return f'<div class="status">{row}</div>'
 
 

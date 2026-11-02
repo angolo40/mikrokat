@@ -1,7 +1,10 @@
 import http.client
+import json
+import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 
 sys.path.insert(0, "/app")
@@ -10,6 +13,16 @@ import store  # noqa: E402
 import web  # noqa: E402
 from test_tls_connections import Conn  # noqa: E402
 from test_tls_settings import full_form  # noqa: E402
+
+
+def control_file():
+    with open(os.path.join(store.TLS_DIR, "control", "config.json"), encoding="utf-8") as source:
+        return json.load(source)
+
+
+def write_expiring_ca():
+    with open(os.path.join(store.TLS_DIR, "state", "stats.json"), "w", encoding="utf-8") as target:
+        json.dump({"at": int(time.time()), "ca_expires": int(time.time()) + 86400}, target)
 
 
 class Server(Conn):
@@ -96,6 +109,11 @@ class Off(Server):
         self.assertIsNone(health.tls_problem())
         self.assertIsNone(health.ca_problem())
 
+    def test_a_ca_about_to_expire_stays_quiet(self):
+        store.settings["tls_enabled"] = True
+        write_expiring_ca()
+        self.assertIsNone(health.ca_problem())
+
     def test_saving_leaves_the_tls_settings_alone(self):
         store.settings.update(tls_enabled=True, tls_devices=["10.0.0.5"], tls_bypass=["a.example"], tls_socks_port=1999, tls_log=False, tls_bank_list=False)
         self.assertFalse(store.save_settings(full_form(tls_enabled="", tls_devices="", tls_bypass="", tls_socks_port="")))
@@ -103,11 +121,28 @@ class Off(Server):
         self.assertEqual((s["tls_enabled"], s["tls_devices"], s["tls_bypass"], s["tls_socks_port"], s["tls_log"], s["tls_bank_list"]),
                          (True, ["10.0.0.5"], ["a.example"], 1999, False, False))
 
+    def test_a_proxy_left_running_is_told_to_stop(self):
+        """Compose leaves a running proxy alone when the profile goes, and the tab to stop it is gone."""
+        store.settings.update(tls_enabled=True, tls_devices=["10.0.0.5"])
+        store.write_tls_control()
+        self.assertFalse(control_file()["enabled"])
+        self.assertTrue(store.settings["tls_enabled"])
+
     def test_saving_does_not_check_the_tls_fields(self):
         self.assertFalse(store.save_settings(full_form(tls_devices="not an ip", tls_socks_port="x")))
 
 
 class On(Server):
+    def test_the_proxy_is_told_to_run(self):
+        store.settings.update(tls_enabled=True, tls_devices=["10.0.0.5"])
+        store.write_tls_control()
+        self.assertTrue(control_file()["enabled"])
+
+    def test_a_ca_about_to_expire_raises_the_alarm(self):
+        store.settings["tls_enabled"] = True
+        write_expiring_ca()
+        self.assertIsNotNone(health.ca_problem())
+
     def test_the_tab_is_there(self):
         page = web.settings_page("mikrokat.lan:8088")
         self.assertIn('id="pane-https"', page)

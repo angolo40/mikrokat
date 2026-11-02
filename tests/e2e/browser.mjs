@@ -132,7 +132,8 @@ async function layout(page) {
   if (JSON.stringify(names) !== JSON.stringify(['Inspection', 'Exceptions', 'Certificate', 'Connection log', 'Advanced'])) fail(`the cards are ${JSON.stringify(names)}`);
   const ys = [tops.beta, tops.status, ...tops.cards.map((c) => c[1])];
   if (ys.some((y, i) => i && y <= ys[i - 1])) fail(`the cards are out of order: ${JSON.stringify(ys)}`);
-  await shown(pane.locator('.status:has-text("On"):has(a[href="/connections"])'), 'the status row with the Connections link');
+  await shown(pane.locator('.status:has-text("On")'), 'the status row');
+  await shown(pane.locator('.logrow a[href="/connections"]'), 'the Connections link on the log card');
   await shown(pane.locator('.status .fact:has-text("CA")'), 'the CA in the status row');
   await shown(pane.locator('.status .fact:has-text("inspected")'), 'Inspected in the status row');
   await shown(pane.locator('.status .fact:has-text("Refused")'), 'Refused in the status row');

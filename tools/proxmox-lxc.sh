@@ -7,11 +7,11 @@
 # Every question has a variable. With the variable set the script does not ask, and with no terminal it
 # uses the defaults, so it can run unattended:
 #
-#   var_ctid=120 var_ip=192.0.2.20/24 var_gateway=192.0.2.1 bash proxmox-lxc.sh
+#   var_ctid=120 var_ip=192.0.2.20/24 var_gateway=192.0.2.1 bash -c "$(curl -fsSL <the address above>)"
 #
 # Update an install made by this script, keeping .env, rules and data:
 #
-#   bash proxmox-lxc.sh update <ctid>
+#   bash -c "$(curl -fsSL <the address above>)" _ update <ctid>
 #
 # Variables: var_ctid var_hostname var_cpu var_ram var_disk var_storage var_bridge var_ip var_gateway
 # var_router_ip var_https. For tests of a change that is not published: var_repo (a Git URL, or a Git
@@ -22,8 +22,10 @@
 set -euo pipefail
 
 PUBLIC_REPO="https://github.com/angolo40/mikrokat.git"
+SCRIPT_URL="https://raw.githubusercontent.com/angolo40/mikrokat/main/tools/proxmox-lxc.sh"
 RELEASE_API="https://api.github.com/repos/angolo40/mikrokat/releases/latest"
-README_URL="https://github.com/angolo40/mikrokat#router-setup"
+ROUTER_DOC="https://github.com/angolo40/mikrokat#router-setup"
+INSTALL_DOC="https://github.com/angolo40/mikrokat#on-proxmox-with-one-command"
 DIR=/root/mikrokat
 
 STEP="starting"
@@ -59,6 +61,20 @@ ask() {
     read -r -p "$question [$default]: " answer || answer=""
   fi
   printf -v "$name" '%s' "${answer:-$default}"
+}
+
+usage() {
+  say "Mikrokat on Proxmox. Run with no argument to make a container and install Mikrokat in it,"
+  say "or with: update <ctid>. The variables that answer the questions are in $INSTALL_DOC"
+}
+
+# yes_no <value> <what>: sets ANSWER to yes or no, and stops on anything else.
+yes_no() {
+  case "$1" in
+    yes | y | true | 1) ANSWER=yes ;;
+    no | n | false | 0 | "") ANSWER=no ;;
+    *) die "$2 must be yes or no. It is: $1" ;;
+  esac
 }
 
 # --- Checks -----------------------------------------------------------------------------------
@@ -124,11 +140,8 @@ collect() {
   number_ok var_disk "$var_disk" 8
   [[ $var_hostname =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]] || die "var_hostname is not a valid host name: $var_hostname"
   [[ -z $var_router_ip || $var_router_ip =~ ^[0-9a-fA-F:.]+$ ]] || die "var_router_ip must be an address. It is: $var_router_ip"
-  case "$var_https" in
-    yes | y | true | 1) var_https=yes ;;
-    no | n | false | 0 | "") var_https=no ;;
-    *) die "var_https must be yes or no. It is: $var_https" ;;
-  esac
+  yes_no "$var_https" var_https
+  var_https=$ANSWER
   ! pct status "$var_ctid" >/dev/null 2>&1 || die "Container $var_ctid already exists. Choose another var_ctid. Nothing was changed."
   ! [ -e "/etc/pve/qemu-server/$var_ctid.conf" ] || die "ID $var_ctid is used by a virtual machine. Choose another var_ctid."
 }
@@ -149,7 +162,8 @@ latest_tag() {
   curl -fsSL --max-time 20 "$RELEASE_API" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1
 }
 
-# Makes the checkout at DIR match the wanted version: REF, else the latest release, else main.
+# Makes the checkout at DIR match the wanted version: REF, else the latest release, else the newest
+# tag if GitHub did not answer, else main. An update must not land on main because of a rate limit.
 checkout() {
   local source=${REPO_FILE:-} tag
   if [ -n "$source" ]; then
@@ -159,6 +173,7 @@ checkout() {
   fi
   tag=${REF:-}
   [ -n "$tag" ] || tag=$(latest_tag || true)
+  [ -n "$tag" ] || tag=$(git -C "$DIR" tag --list 'v*' --sort=-v:refname | head -n 1 || true)
   if [ -n "$tag" ] && git -C "$DIR" rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
     git -C "$DIR" checkout -q --detach "refs/tags/$tag"
   elif [ -n "$tag" ] && git -C "$DIR" rev-parse -q --verify "refs/remotes/origin/$tag^{commit}" >/dev/null; then
@@ -227,6 +242,10 @@ case "$1" in
     fi
     say "Building and starting Mikrokat"
     docker compose up -d --build --remove-orphans
+    # Compose leaves a running container alone when its profile goes.
+    if ! grep -qE '^COMPOSE_PROFILES=.*https' .env; then
+      docker compose --profile https rm -sf tlsproxy
+    fi
     ;;
   *)
     echo "usage: install|update" >&2
@@ -348,11 +367,12 @@ install() {
   say "  Password:  $password"
   say ""
   say "Next, point the MikroTik at it: send TZSP to ${ip:-the container address} port 37008 with the mangle rules"
-  say "in the section Router setup of the README: $README_URL"
+  say "in the section Router setup of the README: $ROUTER_DOC"
   if [ "$var_https" = yes ]; then
     say "HTTPS inspection (beta) is enabled. Turn it on for your own devices under Settings, HTTPS inspection."
   fi
-  say "To update later: bash proxmox-lxc.sh update $CTID"
+  say "To update later, on this host:"
+  say "  bash -c \"\$(curl -fsSL $SCRIPT_URL)\" _ update $CTID"
 }
 
 # --- Update -----------------------------------------------------------------------------------
@@ -371,10 +391,8 @@ update() {
   local env=()
   repo_args env
   if [ -n "${var_https:-}" ]; then
-    case "$var_https" in
-      yes | y | true | 1) env+=("HTTPS=yes") ;;
-      *) env+=("HTTPS=no") ;;
-    esac
+    yes_no "$var_https" var_https
+    env+=("HTTPS=$ANSWER")
   fi
   run_inner update "${env[@]}"
   wait_web
@@ -388,6 +406,6 @@ case "${1:-install}" in
     shift
     update "${1:-}"
     ;;
-  -h | --help | help) sed -n '2,20p' "$0" ;;
+  -h | --help | help) usage ;;
   *) die "Unknown command: $1. Use no argument to install, or: update <ctid>" ;;
 esac

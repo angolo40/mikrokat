@@ -198,7 +198,8 @@ def write_tls_control():
 
     It holds no secret, so the proxy container can read it whoever owns it. The caller decides about the lock.
     """
-    config = {"enabled": settings["tls_enabled"], "socks": settings["tls_socks"], "socks_port": settings["tls_socks_port"],
+    # Compose leaves a running proxy alone when the profile goes, and the tab to stop it goes too. The saved switch stays.
+    config = {"enabled": tls_available and settings["tls_enabled"], "socks": settings["tls_socks"], "socks_port": settings["tls_socks_port"],
               "devices": list(settings["tls_devices"]), "bypass": list(settings["tls_bypass"]),
               "bypass_custom": settings["tls_bypass_saved"],
               "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"]),
