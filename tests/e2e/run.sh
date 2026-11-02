@@ -745,7 +745,6 @@ finish() {
   remove_rules
   feature remove
   drop_own_ca
-  wait_for 15 incoming_empty || true # only the proxy empties that folder, and it may be about to go
   # Without the override, so the proxy trusts the public roots again and forgets the automatic bypass.
   # As the owner has it: the profile from .env decides whether the proxy exists, and the app drops the test's variable.
   unset COMPOSE_PROFILES
@@ -753,6 +752,7 @@ finish() {
     docker compose up -d --force-recreate --no-deps tlsproxy </dev/null >/dev/null 2>&1
   else
     docker compose --profile https rm -sf tlsproxy </dev/null >/dev/null 2>&1
+    rm -f data/tls/incoming/remove-own-ca # no proxy is left to read it
   fi
   docker compose up -d --force-recreate --no-deps mikrokat </dev/null >/dev/null 2>&1
   wait_for 15 incoming_empty || echo "warning: data/tls/incoming is not empty"
