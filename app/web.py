@@ -198,6 +198,7 @@ form > input[name=tab] { position: absolute; opacity: 0; width: 0; height: 0; }
 #tab-data:checked ~ #pane-data { display: block; } #tab-data:checked ~ .tabbar label[for=tab-data] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
 #tab-account:checked ~ #pane-account { display: block; } #tab-account:checked ~ .tabbar label[for=tab-account] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
 #tab-ai:checked ~ #pane-ai { display: block; } #tab-ai:checked ~ .tabbar label[for=tab-ai] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+#tab-https:checked ~ #pane-https { display: block; } #tab-https:checked ~ .tabbar label[for=tab-https] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
 select { width: 100%; }
 .with-guide { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 .guide { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow-y: auto; background: var(--raised); border-radius: 14px; padding: 6px 16px 12px; font-size: 14px; }

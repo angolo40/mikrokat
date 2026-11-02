@@ -600,6 +600,12 @@ class Socket(Web):
             reply = client.makefile("rb").read()
         self.assertIn(b'class="note error"', reply)
 
+class Tabs(unittest.TestCase):
+    def test_every_tab_has_a_rule_that_shows_it(self):
+        for key, _ in web.SETTINGS_TABS:
+            self.assertIn(f"#tab-{key}:checked ~ #pane-{key}", web.STYLE)
+            self.assertIn(f"#tab-{key}:checked ~ .tabbar label[for=tab-{key}]", web.STYLE)
+
 
 if __name__ == "__main__":
     unittest.main()
