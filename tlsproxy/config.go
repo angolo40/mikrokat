@@ -33,6 +33,8 @@ type Config struct {
 	AutoRemove      []AutoRemoval `json:"auto_remove"`
 	// Keep state/connections.jsonl: what the proxy did with each connection.
 	LogConnections bool `json:"log_connections"`
+	// Skip the names of the downloaded bank list, whether or not BypassCustom is set.
+	BankList bool `json:"bank_list"`
 }
 
 // LoadConfig reads the control file. A missing file means the feature is off.

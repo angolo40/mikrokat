@@ -5,6 +5,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,14 @@ func main() {
 		log.Printf("bypass defaults: %v", err)
 	}
 	bypass := NewBypass(BuiltinBypass)
+	bankList := NewBankList()
+	bypass.SetBankList(bankList)
+	url := bankListURL
+	if v := os.Getenv("TLS_BANK_LIST_URL"); v != "" { // for tests
+		url = v
+	}
+	bank := NewBankLoader(bankList, stats, stateDir, url)
+	bank.Start()
 	server := NewServer(&Engine{
 		CA:      new(atomic.Pointer[CA]),
 		Bypass:  bypass,
@@ -60,7 +69,9 @@ func main() {
 		}
 	}
 
-	server.Apply(reader.read())
+	cfg := reader.read()
+	server.Apply(cfg)
+	bank.Tick(cfg.Enabled && cfg.BankList)
 	writeStats()
 	control := time.NewTicker(controlEvery)
 	status := time.NewTicker(statsEvery)
@@ -68,7 +79,10 @@ func main() {
 		select {
 		case <-control.C:
 			// At once, or the alarm could read the old state just after a switch-on.
-			if server.Apply(reader.read()) {
+			cfg := reader.read()
+			changed := server.Apply(cfg)
+			bank.Tick(cfg.Enabled && cfg.BankList)
+			if changed {
 				writeStats()
 			}
 		case <-status.C:

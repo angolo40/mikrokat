@@ -28,6 +28,9 @@ type Stats struct {
 	dropped       int64
 	logDropped    int64
 	logSkipped    int64
+	bankNames     int
+	bankAt        int64
+	bankError     string
 	listening     bool
 	problem       string
 	caExpires     int64
@@ -95,6 +98,14 @@ func (s *Stats) LogSkipped() {
 	s.mu.Unlock()
 }
 
+// SetBankList records the bank list in use, how many names it has and when it
+// was downloaded (Unix seconds), and why the last download failed, if it did.
+func (s *Stats) SetBankList(names int, at int64, err string) {
+	s.mu.Lock()
+	s.bankNames, s.bankAt, s.bankError = names, at, err
+	s.mu.Unlock()
+}
+
 func (s *Stats) HandshakeFailed() {
 	s.mu.Lock()
 	s.handshakes++
@@ -158,6 +169,9 @@ type statsFile struct {
 	Dropped       int64            `json:"copies_dropped"`
 	LogDropped    int64            `json:"log_dropped"`
 	LogSkipped    int64            `json:"log_skipped"`
+	BankNames     int              `json:"bank_list_names"`
+	BankAt        int64            `json:"bank_list_at"`
+	BankError     string           `json:"bank_list_error"`
 	AutoBypass    []AutoEntry      `json:"auto_bypass"`
 	Listening     bool             `json:"listening"`
 	Error         string           `json:"error"`
@@ -187,6 +201,9 @@ func (s *Stats) WriteFile(path string, auto []AutoEntry) error {
 		Dropped:       s.dropped,
 		LogDropped:    s.logDropped,
 		LogSkipped:    s.logSkipped,
+		BankNames:     s.bankNames,
+		BankAt:        s.bankAt,
+		BankError:     s.bankError,
 		AutoBypass:    auto,
 		Listening:     s.listening,
 		Error:         s.problem,

@@ -25,6 +25,30 @@ googleapis.com
 recaptcha.net
 youtube.com
 
+# Apple: its services fail any connection that uses HTTPS interception
+# (support.apple.com/101555)
+apple.com
+icloud.com
+icloud-content.com
+cdn-apple.com
+mzstatic.com
+apple-cloudkit.com
+apple-dns.net
+apzones.com
+itunes.com
+apple-livephotoskit.com
+apple-mapkit.com
+
+# Microsoft 365 sign-in and Office, from Microsoft's published endpoints
+microsoftonline.com
+login.live.com
+office.com
+office.net
+office365.com
+sharepoint.com
+teams.microsoft.com
+outlook.com
+
 # Banks and payments, Italy
 intesasanpaolo.com
 unicredit.it
@@ -34,6 +58,7 @@ bancobpm.it
 mps.it
 bnl.it
 paypal.com
+finecobank.com
 
 # Banks, Switzerland
 ubs.com

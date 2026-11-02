@@ -81,6 +81,8 @@ type Bypass struct {
 	mu       sync.Mutex
 	builtin  []string
 	own      []string
+	bank     *BankList // the downloaded bank list
+	bankOn   bool
 	custom   bool              // only the owner's list counts, plus alwaysBypass
 	auto     map[autoKey]int64 // expiry, Unix seconds
 	removals map[autoKey]int64 // latest removal time, Unix seconds
@@ -117,6 +119,21 @@ func (b *Bypass) SetOwn(names []string) {
 	b.mu.Unlock()
 }
 
+// SetBankList sets the downloaded list of bank names.
+func (b *Bypass) SetBankList(l *BankList) {
+	b.mu.Lock()
+	b.bank = l
+	b.mu.Unlock()
+}
+
+// SetBank chooses whether the bank list counts. It does whether or not the
+// owner's list replaces the built-in one.
+func (b *Bypass) SetBank(on bool) {
+	b.mu.Lock()
+	b.bankOn = on
+	b.mu.Unlock()
+}
+
 // SetCustom chooses whether the owner's list replaces the built-in one.
 func (b *Bypass) SetCustom(custom bool) {
 	b.mu.Lock()
@@ -133,7 +150,8 @@ func suffixMatch(list []string, name string) bool {
 	return false
 }
 
-// Match returns "bypass" for a built-in or own name, "auto_bypass" for a live
+// Match returns "bypass" for a built-in or own name, "bank_list" for a name of
+// the downloaded bank list, "auto_bypass" for a live
 // automatic entry of this device for exactly this name, and "" otherwise.
 func (b *Bypass) Match(device, name string, now time.Time) string {
 	k := newAutoKey(device, name)
@@ -141,6 +159,9 @@ func (b *Bypass) Match(device, name string, now time.Time) string {
 	defer b.mu.Unlock()
 	if suffixMatch(b.own, k.name) || k.name == alwaysBypass || strings.HasSuffix(k.name, "."+alwaysBypass) || (!b.custom && suffixMatch(b.builtin, k.name)) {
 		return "bypass"
+	}
+	if b.bankOn && b.bank.Match(k.name) {
+		return "bank_list"
 	}
 	if b.auto[k] > now.Unix() {
 		return "auto_bypass"
