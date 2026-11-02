@@ -68,6 +68,46 @@ keyUsage = critical, keyCertSign, cRLSign
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid, issuer
 """
+
+
+# What the preset menu on the AI tab fills in: key, name, address, a suggested model, and where to find a key. Model names change, so they are only a suggestion.
+AI_PRESETS = (
+    ("ollama", "Ollama", "http://host:11434/v1", "llama3.2", "Runs on your own machine, so no key is needed. Replace host with its address. Ollama must listen on the network, not only on localhost."),
+    ("lmstudio", "LM Studio", "http://host:1234/v1", "", "Runs on your own machine, so no key is needed. Start the local server in LM Studio, replace host with its address and enter the name of the model you loaded."),
+    ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-luna", "Get a key at platform.openai.com/api-keys. The rule text is sent to OpenAI."),
+    ("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.1-flash-lite", "Get a key at aistudio.google.com/apikey. The rule text is sent to Google."),
+    ("anthropic", "Anthropic", "https://api.anthropic.com/v1", "claude-haiku-5-5", "Get a key at console.anthropic.com. This is Anthropic's OpenAI compatibility endpoint. The rule text is sent to Anthropic."),
+    ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "", "Get a key at openrouter.ai/keys, and enter a model as vendor/name. The rule text is sent to OpenRouter and the model's provider."),
+    ("custom", "Custom", "", "", "Any server with an OpenAI-compatible API. Leave the key empty if it needs none."),
+)
+AI_LOCAL_PRESETS = {"ollama": re.compile(r"https?://[^/\s]+:11434/v1"), "lmstudio": re.compile(r"https?://[^/\s]+:1234/v1")}
+AI_PRESET_SCRIPT = ("(function(){var s=document.getElementById('ai-preset');if(!s)return;s.addEventListener('change',function(){var o=s.selectedOptions[0];"
+                    "if(o.value!=='custom'){document.querySelector('[name=ai_url]').value=o.dataset.url;document.querySelector('[name=ai_model]').value=o.dataset.model;}"
+                    "document.querySelectorAll('.preset-hint').forEach(function(h){h.hidden=h.dataset.preset!==o.value;});});})();")
+
+
+def ai_preset_for(url):
+    """The preset whose address the saved one is. The choice is not stored, so it is read from the address."""
+    url = url.strip().rstrip("/")
+    for key, _, address, _, _ in AI_PRESETS:
+        if address and url == address:
+            return key
+    for key, pattern in AI_LOCAL_PRESETS.items():
+        if pattern.fullmatch(url):
+            return key
+    return "custom"
+
+
+SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("https", "HTTPS inspection"), ("account", "Account"))
+
+
+def tab_css(tabs):
+    """The rules that show a tab's pane, mark its label, and show its block of the guide. One set for each tab, so a new tab cannot stay hidden."""
+    return "\n".join(
+        f"#tab-{k}:checked ~ #pane-{k} {{ display: block; }} #tab-{k}:checked ~ .tabbar label[for=tab-{k}] {{ background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }}\n"
+        f".with-guide:has(#tab-{k}:checked) .guide-{k} {{ display: block; }}" for k, _ in tabs)
+
+
 STYLE = """
 :root { color-scheme: light; --surface: #fcfcfb; --raised: #f4f3ef; --card: #ffffff; --line: #e4e3de; --text: #0b0b0b; --muted: #5f5e5a;
   --accent: #2a78d6; --accent-soft: #e3eefb; --accent-text: #fff; --error: #b3261e; --series-1: #2a78d6; --series-2: #eb6834; --shadow: 0 1px 2px rgb(0 0 0 / 6%);
@@ -210,13 +250,9 @@ form > input[name=tab] { position: absolute; opacity: 0; width: 0; height: 0; }
 .tabbar label { padding: 6px 14px; border-radius: 8px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .tabbar label:hover { color: var(--text); }
 .pane { display: none; }
-#tab-protection:checked ~ #pane-protection { display: block; } #tab-protection:checked ~ .tabbar label[for=tab-protection] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-notifications:checked ~ #pane-notifications { display: block; } #tab-notifications:checked ~ .tabbar label[for=tab-notifications] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-router:checked ~ #pane-router { display: block; } #tab-router:checked ~ .tabbar label[for=tab-router] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-data:checked ~ #pane-data { display: block; } #tab-data:checked ~ .tabbar label[for=tab-data] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-account:checked ~ #pane-account { display: block; } #tab-account:checked ~ .tabbar label[for=tab-account] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-ai:checked ~ #pane-ai { display: block; } #tab-ai:checked ~ .tabbar label[for=tab-ai] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-#tab-https:checked ~ #pane-https { display: block; } #tab-https:checked ~ .tabbar label[for=tab-https] { background: var(--card); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.guide-block { display: none; }
+.preset-hint[hidden] { display: none; }
+/*TABS*/
 select { width: 100%; }
 .with-guide { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 .guide { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow-y: auto; background: var(--raised); border-radius: 14px; padding: 6px 16px 12px; font-size: 14px; }
@@ -240,7 +276,7 @@ select { width: 100%; }
   header strong { width: auto; } nav { order: 3; flex-basis: 100%; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } .tile { padding: 12px 14px; } .tile b { font-size: 26px; }
   .actions-cell form.inline { display: block; margin: 0 0 4px; } .feed .line { grid-template-columns: 62px minmax(0, 1fr) auto; } .feed .line .text { grid-column: 1 / -1; grid-row: 2; } }
-"""
+""".replace("/*TABS*/", tab_css(SETTINGS_TABS))
 
 
 def suricata(command):
@@ -784,8 +820,29 @@ def allowlist_page(host, notice="", error=""):
     return layout("/allowlist", "Allowlist", body, host, notice, error)
 
 
-GUIDE = """<aside class="guide">
-<h2>1. Send traffic here</h2>
+# One block per Settings tab, in the order of SETTINGS_TABS. The page shows only the one of the open tab.
+GUIDE = {
+    "protection": """<h2>Monitor or Block</h2>
+<p>Monitor only tells you. Block also adds the attacker's address to a list on the router, which drops its traffic. Start in Monitor.</p>
+<h2>Severities</h2>
+<p>Choose which severities Mikrokat reacts to. 1 is the most serious. Fewer severities mean fewer alerts and fewer blocks.</p>
+<h2>Repeat offenders</h2>
+<p>Block time is how long an address stays blocked. With Block repeat offenders for longer, the first, second and later blocks of the same address last longer, and Mikrokat remembers for 90 days.</p>
+<h2>Before you switch to Block</h2>
+<p>Leave Monitor on for a few days. Mute noisy rules from Overview, and add your public addresses and other trusted hosts to the Allowlist. Then switch to Block.</p>
+<p>Every block shows on the Blocked page, where you can remove it.</p>
+<h2>The allowlist</h2>
+<p>Addresses on the Allowlist are never blocked or reported. Mikrokat already protects your own networks and common DNS servers. If you remove a private network from the built-in entries, it can block hosts inside it.</p>""",
+    "notifications": """<h2>Telegram</h2>
+<p>Message @BotFather, send /newbot and copy the token it gives you. Send your new bot any message. Then open api.telegram.org/bot&lt;token&gt;/getUpdates in a browser and look for chat, then id in the answer: that number is your chat ID. A group has a negative one.</p>
+<h2>Email</h2>
+<p>Enter your mail server, a sender and a recipient. Use TLS on port 465, or STARTTLS on 587. Many providers need an app password.</p>
+<h2>Webhook</h2>
+<p>Mikrokat posts each alert as JSON to your address. Choose the format: Slack, Discord, Microsoft Teams, Splunk, or plain JSON for your own service. A secret signs the message so you can check where it came from.</p>
+<h2>Test</h2>
+<p>Each section has its own test button. It saves what is on screen, then sends one message.</p>
+<p>The daily summary goes to every channel that is on.</p>""",
+    "router": """<h2>1. Send traffic here</h2>
 <p>Copy the traffic to and from the internet to this host. Replace WAN with your interface list.</p>
 <pre>/ip firewall mangle add chain=forward out-interface-list=WAN action=sniff-tzsp sniff-target={ip} sniff-target-port=37008 comment=mikrokat
 /ip firewall mangle add chain=forward in-interface-list=WAN action=sniff-tzsp sniff-target={ip} sniff-target-port=37008 comment=mikrokat</pre>
@@ -800,20 +857,45 @@ GUIDE = """<aside class="guide">
 <pre>/ip firewall raw add chain=prerouting action=drop src-address-list=mikrokat comment=mikrokat
 /ip firewall raw add chain=prerouting action=drop dst-address-list=mikrokat comment=mikrokat</pre>
 <p>For IPv6, repeat them under /ipv6 firewall raw and turn on Block IPv6 addresses.</p>
-<h2>4. Choose your notifications</h2>
-<p>On the Notifications tab, turn on Telegram, email or a webhook. For Telegram, message @BotFather to create a bot, send it a message, then open api.telegram.org/bot&lt;token&gt;/getUpdates to read your chat ID.</p>
-<h2>5. Test</h2>
-<p>Each section has its own test button. It saves what is on screen, then tries it.</p>
-<h2>6. Start in Monitor</h2>
-<p>Leave Monitor on for a few days. Mute noisy rules from Overview and add your public addresses and other trusted hosts to the Allowlist. Then switch to Block.</p>
-<p>Every block shows on the Blocked page, where you can remove it.</p>
-<h2>7. Look inside HTTPS (optional)</h2>
-<p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac. Tick Proxy DNS when using SOCKS v5, so the proxy looks up each name.</p>
-<p>If you run your own root CA, the safest way is Create a key here on that tab: the proxy makes the key, you download the request and sign it on your machine with the command shown, and you upload the certificate. The key never crosses the network and your root key never leaves your machine.</p>
+<p>Then press Test connection.</p>""",
+    "data": """<h2>Retention</h2>
+<p>Keep logs for, 1 to 90 days, sets how long Suricata's EVE files stay on disk. EveBox keeps 7 days whatever is set, so lowering it does not remove events from EveBox.</p>
+<h2>Disk limits</h2>
+<p>Suricata's logs stop at 4 GB, the EveBox database at 4 GB, and container logs at 30 MB each. The oldest files go first. Mikrokat warns you when the disk fills up.</p>
+<h2>EVE and EveBox</h2>
+<p>EVE is Suricata's JSON log. EveBox, behind the Events link, reads it and lets you search every alert.</p>
+<h2>SIEM export</h2>
+<p>For Splunk, Elastic, Wazuh, Graylog or any log collector, and optional. Mikrokat can write an alert file, one JSON line per alert in EVE format, or send the same record over syslog. Use the test button to send one event.</p>""",
+    "ai": """<h2>What is sent</h2>
+<p>Only the text of the rule you ask about, and how many alerts it raised. Never addresses, never traffic. The answer is kept, so each rule is asked once.</p>
+<p>The model cannot block anything. It only writes the explanation.</p>
+<h2>Choose a model</h2>
+<p>Pick a preset to fill the address and a suggested model. Model names change, so check your provider's list. A small, cheap model is enough for five sentences.</p>
+<p>Reasoning models can spend the whole answer limit on thinking and send no text. Choose a plain one.</p>
+<h2>Local or hosted</h2>
+<p>A local server such as Ollama or LM Studio keeps everything on your network and needs no key. A hosted one needs a key from the provider, and it receives the rule text.</p>
+<h2>Cost</h2>
+<p>Each explanation is one short request. At home this is a few cents a month at most, and nothing for a local model.</p>
+<h2>Test</h2>
+<p>Test sends one request about a sample rule and shows the time and the first line of the answer. Your key is never shown.</p>""",
+    "https": """<h2>Look inside HTTPS (optional)</h2>
+<p>On this tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from this tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac. Tick Proxy DNS when using SOCKS v5, so the proxy looks up each name.</p>
 <p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
-<p>The Connections page shows what the proxy did with each connection: which site, from which device, whether it was inspected or passed untouched and why, and how many bytes. It shows never URLs or content, and only traffic that went through the proxy, not the whole network. The proxy keeps the log in two files of 5 MiB, so at most 10 MiB, and the page keeps its statistics for 7 days. Keep a log of connections on the HTTPS inspection tab turns it off.</p>
-<p>Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
-</aside>"""
+<h2>Your own CA</h2>
+<p>There are two ways. The safest is Create a key here: the proxy makes the key, you download the request and sign it on your machine with the command shown, and you upload the certificate. The key never crosses the network and your root key never leaves your machine.</p>
+<p>Or upload a certificate chain and its key together. Then the key does cross the network, so use a CA made only for this.</p>
+<h2>Consent</h2>
+<p>Inspect only your own devices, or with the consent of the person using them. Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
+<h2>The Connections page</h2>
+<p>The Connections page shows what the proxy did with each connection: which site, from which device, whether it was inspected or passed untouched and why, and how many bytes. It shows never URLs or content, and only traffic that went through the proxy, not the whole network.</p>
+<p>The proxy keeps the log in two files of 5 MiB, so at most 10 MiB, and the page keeps its statistics for 7 days. Keep a log of connections turns it off, and Delete the log removes it.</p>""",
+    "account": """<h2>Password</h2>
+<p>Set a new password of at least 12 characters, and repeat it. It signs in to these pages and to Events, and it keeps working when single sign-on is on. Leave the fields empty to keep the current one.</p>
+<h2>Single sign-on</h2>
+<p>Mikrokat can sign you in through an OpenID Connect provider such as Authentik, Keycloak or Authelia. Open How to set it up on this tab. The password keeps working if the provider is down.</p>
+<h2>Sessions</h2>
+<p>A sign-in lasts 12 hours, or until you sign out or Mikrokat restarts. Anyone who signs in has full control, including over the router.</p>""",
+}
 
 
 # Addresses the proxy refuses, written as a host in a URL. The test is on the text: isInNet would look a name up.
@@ -1006,9 +1088,6 @@ def https_card(host, switch, field):
             f'<section class="card"><h2>Numbers</h2>{counters}</section>')
 
 
-SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("https", "HTTPS inspection"), ("account", "Account"))
-
-
 def settings_page(host, notice="", error="", tab=""):
     s = store.settings
     tab = tab if tab in dict(SETTINGS_TABS) else "protection"
@@ -1105,11 +1184,19 @@ def settings_page(host, notice="", error="", tab=""):
                f'<p><b>Authentik:</b> use Applications, Create with Provider. The issuer is https://your-host/application/o/your-slug/ and groups come with the profile scope.</p>'
                f'<p><b>Keycloak:</b> the issuer is https://your-host/realms/your-realm. Add a Group Membership mapper with the claim name groups and Full group path off.</p>'
                f'<p><b>Authelia:</b> the issuer is https://your-host. Add groups to Scopes here and on the client.</p></details></div></section>')
+    chosen = ai_preset_for(s["ai_url"])
+    preset_options = "".join(
+        f'<option value="{k}"' + (f' data-url="{esc(a, quote=True)}" data-model="{esc(m, quote=True)}"' if k != "custom" else "") + (" selected" if k == chosen else "") + f'>{t}</option>'
+        for k, t, a, m, _ in AI_PRESETS)
+    preset_hints = "".join(f'<p class="hint preset-hint" data-preset="{k}"{"" if k == chosen else " hidden"}>{esc(h)}</p>' for k, _, _, _, h in AI_PRESETS)
     assistant = (f'<section class="card"><h2>Explain</h2><p>Adds an Explain button that describes a rule in plain words, on request. It only ever sends the rule text, never addresses or traffic, and it cannot block anything.</p>'
-                 f'{switch("ai_enabled", "Show the Explain button", s["ai_enabled"])}<div class="reveal"><div class="fields">'
-                 + field("Address", "ai_url", s["ai_url"], hint="Any OpenAI-compatible API, such as http://host:11434/v1 for Ollama")
-                 + field("Model", "ai_model", s["ai_model"]) + secret("API key", "ai_key", s["ai_key"], "Leave empty for a local model.")
-                 + field("Answer language", "ai_language", s["ai_language"]) + '</div></div></section>')
+                 f'{switch("ai_enabled", "Show the Explain button", s["ai_enabled"])}<div class="reveal">'
+                 # No name: the choice is not submitted or stored. It only fills the two fields below.
+                 f'<label class="field"><span>Preset</span><select id="ai-preset">{preset_options}</select></label>{preset_hints}<div class="fields">'
+                 + field("Address", "ai_url", s["ai_url"], hint="Any OpenAI-compatible API")
+                 + field("Model", "ai_model", s["ai_model"], hint="A suggestion: model names change") + secret("API key", "ai_key", s["ai_key"], "Leave empty for a local model.")
+                 + field("Answer language", "ai_language", s["ai_language"]) + '</div>' + test("/test/explain", "Test the model")
+                 + f'</div><script>{AI_PRESET_SCRIPT}</script></section>')
     panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "https": https_card(host, switch, field), "account": account}
     radios = "".join(f'<input type="radio" name="tab" id="tab-{k}" value="{k}"{checked(k == tab)}>' for k, _ in SETTINGS_TABS)
     labels = "".join(f'<label for="tab-{k}">{t}</label>' for k, t in SETTINGS_TABS)
@@ -1121,7 +1208,9 @@ def settings_page(host, notice="", error="", tab=""):
             f'<form id="own-ca-signed" method="post" action="/tls/own-ca" enctype="multipart/form-data">{hidden()}</form>'
             f'<form id="own-ca-request" method="post" action="/tls/own-ca/request">{hidden()}</form>'
             f'<form id="own-ca-cancel" method="post" action="/tls/own-ca/request/cancel">{hidden()}</form>')
-    guide = GUIDE.format(ip=esc(host.split(":")[0]))
+    ip = esc(host.split(":")[0])
+    blocks = "".join(f'<div class="guide-block guide-{k}">{GUIDE[k].format(ip=ip)}</div>' for k, _ in SETTINGS_TABS)
+    guide = f'<aside class="guide">{blocks}</aside>'
     return layout("/settings", "Settings", f'<div class="with-guide"><div>{body}</div>{guide}</div>', host, notice, error)
 
 
@@ -1613,7 +1702,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/unblock-allow":
             error = unblock(form) or store.add_allowed(form.get("address", ""), "Unblocked by hand")
             done, page = "unblocked-allowed", "/blocked"
-        elif self.path in ("/test/router", "/test/telegram", "/test/email", "/test/webhook", "/test/syslog", "/test/digest"):
+        elif self.path in ("/test/router", "/test/telegram", "/test/email", "/test/webhook", "/test/syslog", "/test/digest", "/test/explain"):
             # The test buttons sit inside the settings form: save what is on screen, then try it.
             tab = form.get("tab", "")
             failure = store.save_settings(form)
@@ -1622,6 +1711,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(settings_page(host, "", failure, tab))
             elif self.path == "/test/router":
                 self.reply(settings_page(host, *test_router(), tab))
+            elif self.path == "/test/explain":
+                try:
+                    took, first = actions.try_explain()
+                    self.reply(settings_page(host, f"The model answered in {took} ms: {first}", "", tab))
+                except ValueError as problem:
+                    self.reply(settings_page(host, "", str(problem), tab))
             elif self.path == "/test/digest":
                 actions.notify(health.digest_text())
                 self.reply(settings_page(host, "Summary queued for the channels that are on.", "", tab))

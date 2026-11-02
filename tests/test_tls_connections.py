@@ -403,8 +403,8 @@ class Page(Conn):
         self.assertEqual(web.overview_tile(), "")
 
     def test_the_guide_says_what_the_page_does_not_show(self):
-        self.assertIn("never URLs", web.GUIDE)
-        self.assertIn("10 MiB", web.GUIDE)
+        self.assertIn("never URLs", web.GUIDE["https"])
+        self.assertIn("10 MiB", web.GUIDE["https"])
 
 
 class Http(Conn):
