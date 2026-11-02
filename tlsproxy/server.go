@@ -169,6 +169,7 @@ func (s *Server) Apply(cfg Config) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cfg = cfg
+	s.Engine.Log.SetEnabled(cfg.LogConnections)
 	s.Engine.Bypass.SetOwn(cfg.Bypass)
 	s.Engine.Bypass.SetCustom(cfg.BypassCustom)
 	s.Engine.Bypass.Apply(cfg.AutoRemove)
@@ -338,10 +339,12 @@ func (s *Server) admit(ln net.Listener, device net.IP) (context.Context, func(),
 	key := device.String()
 	if !s.cfg.Allowed(device) {
 		s.Engine.Stats.RefusedFrom(device)
+		s.logRefused(device, Dest{}, "not_listed", time.Now())
 		return nil, nil, false
 	}
 	if s.total >= maxConns || len(s.conns[key]) >= maxPerDevice {
 		s.Engine.Stats.Refused()
+		s.logRefused(device, Dest{}, "cap", time.Now())
 		return nil, nil, false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -366,6 +369,7 @@ func (s *Server) admit(ln net.Listener, device net.IP) (context.Context, func(),
 
 // serve runs the SOCKS handshake of one connection and hands it to the engine.
 func (s *Server) serve(ctx context.Context, c net.Conn, device net.IP) {
+	start := time.Now()
 	defer c.Close()
 	// Handle does the same, but it has not started during Greet and lookup.
 	stop := context.AfterFunc(ctx, func() { c.Close() })
@@ -388,9 +392,10 @@ func (s *Server) serve(ctx context.Context, c net.Conn, device net.IP) {
 			Reply(c, ReplyUnreachable)
 			return
 		}
-		d = Dest{IP: ip, Port: d.Port}
+		d = Dest{IP: ip, Port: d.Port, Name: d.Host}
 	}
 	if s.refused(d.IP) {
+		s.logRefused(device, d, "destination", start)
 		Reply(c, ReplyNotAllowed)
 		return
 	}
@@ -401,6 +406,17 @@ func (s *Server) serve(ctx context.Context, c net.Conn, device net.IP) {
 			Reply(c, ReplyUnreachable)
 		}
 	})
+}
+
+// logRefused writes the connection log line of a refused connection, which
+// has no bytes. d is what is known of the destination.
+func (s *Server) logRefused(device net.IP, d Dest, reason string, start time.Time) {
+	r := ConnRecord{Device: device.String(), Name: d.Name, Action: "refused", Reason: reason,
+		Ms: time.Since(start).Milliseconds()}
+	if d.IP != nil {
+		r.IP, r.Port = d.IP.String(), d.Port
+	}
+	s.Engine.Log.AddRefused(r)
 }
 
 // refused reports whether a device may not connect to ip.

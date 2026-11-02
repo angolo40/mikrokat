@@ -16,6 +16,7 @@ const (
 	privateDir  = "/tls/private"
 	incomingDir = "/tls/incoming"
 	statsPath   = "/tls/state/stats.json"
+	connLogPath = "/tls/state/connections.jsonl"
 
 	emitAddr  = "127.0.0.1:37008"
 	emitQueue = 64 << 20
@@ -47,6 +48,7 @@ func main() {
 		Bypass:  bypass,
 		Emitter: emitter,
 		Stats:   stats,
+		Log:     NewConnLog(connLogPath, stats),
 		Dial:    Dial,
 	}, privateDir, stateDir)
 	server.IncomingDir = incomingDir

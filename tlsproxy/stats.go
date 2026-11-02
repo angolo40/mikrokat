@@ -26,6 +26,8 @@ type Stats struct {
 	handshakes    int64
 	copied        int64
 	dropped       int64
+	logDropped    int64
+	logSkipped    int64
 	listening     bool
 	problem       string
 	caExpires     int64
@@ -75,6 +77,21 @@ func (s *Stats) RefusedFrom(ip net.IP) {
 	s.mu.Lock()
 	s.refused++
 	s.lastRefused, s.lastRefusedAt = ip.String(), time.Now().Unix()
+	s.mu.Unlock()
+}
+
+// LogDropped counts a connection record lost because the log queue was full or
+// the file could not be written.
+func (s *Stats) LogDropped() {
+	s.mu.Lock()
+	s.logDropped++
+	s.mu.Unlock()
+}
+
+// LogSkipped counts a refusal left out of the log by its rate limit.
+func (s *Stats) LogSkipped() {
+	s.mu.Lock()
+	s.logSkipped++
 	s.mu.Unlock()
 }
 
@@ -139,6 +156,8 @@ type statsFile struct {
 	Handshakes    int64            `json:"handshake_failures"`
 	Copied        int64            `json:"copied_bytes"`
 	Dropped       int64            `json:"copies_dropped"`
+	LogDropped    int64            `json:"log_dropped"`
+	LogSkipped    int64            `json:"log_skipped"`
 	AutoBypass    []AutoEntry      `json:"auto_bypass"`
 	Listening     bool             `json:"listening"`
 	Error         string           `json:"error"`
@@ -166,6 +185,8 @@ func (s *Stats) WriteFile(path string, auto []AutoEntry) error {
 		Handshakes:    s.handshakes,
 		Copied:        s.copied,
 		Dropped:       s.dropped,
+		LogDropped:    s.logDropped,
+		LogSkipped:    s.logSkipped,
 		AutoBypass:    auto,
 		Listening:     s.listening,
 		Error:         s.problem,

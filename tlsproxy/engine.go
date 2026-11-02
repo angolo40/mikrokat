@@ -46,6 +46,7 @@ type Engine struct {
 	Bypass     *Bypass
 	Emitter    *Emitter
 	Stats      *Stats
+	Log        *ConnLog // nil means no connection log
 	Dial       func(ctx context.Context, d Dest) (net.Conn, error)
 	Roots      *x509.CertPool   // nil means the system pool
 	HelloLimit time.Duration    // zero means 5 seconds
@@ -66,6 +67,16 @@ func (e *Engine) now() time.Time {
 // It closes client and every upstream connection before it returns. ready is
 // called exactly once, when the first upstream dial has finished.
 func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d Dest, ready func(ok bool)) {
+	start := e.now()
+	rec := ConnRecord{Device: device.String(), Name: d.Name, IP: d.IP.String(), Port: d.Port}
+	defer func() {
+		// A connection that never reached a relay is not logged.
+		if rec.Action != "" {
+			end := e.now()
+			rec.At, rec.Ms = end.Unix(), end.Sub(start).Milliseconds()
+			e.Log.Add(rec)
+		}
+	}()
 	conns := &connSet{}
 	conns.add(client)
 	defer conns.close()
@@ -83,7 +94,8 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	br := bufio.NewReaderSize(client, 16*1024+5)
 	passThrough := func(reason string, up net.Conn) {
 		e.Stats.Relayed(reason)
-		e.relay(conns, client, up, br, up)
+		rec.Action, rec.Reason = "relayed", reason
+		rec.Up, rec.Down = e.relay(conns, client, up, br, up)
 	}
 	if d.Port != 443 {
 		passThrough("not_443", upstream)
@@ -97,6 +109,9 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	h := ReadHello(br, client, limit)
 	if ctx.Err() != nil {
 		return
+	}
+	if h.Name != "" {
+		rec.Name = h.Name
 	}
 	reason := Classify(d, h, e.Bypass.Match(device.String(), h.Name, e.now()))
 	if reason == "" && device.To4() == nil {
@@ -168,7 +183,8 @@ func (e *Engine) Handle(ctx context.Context, client net.Conn, device net.IP, d D
 	e.Stats.Inspected()
 	s := e.Emitter.Open(device, d.IP, remotePort(client))
 	defer s.Close()
-	e.relay(conns, toClient, toServer,
+	rec.Action = "inspected"
+	rec.Up, rec.Down = e.relay(conns, toClient, toServer,
 		io.TeeReader(toClient, copyTo(s.Client)),
 		io.TeeReader(toServer, copyTo(s.Server)))
 }
@@ -242,8 +258,9 @@ type closeWriter interface {
 // Bytes are read from fromClient and fromUpstream and written to the other
 // side, which is what gets half-closed. A hostile peer can hold a connection
 // open for ever, so a relay with no bytes either way for IdleLimit is closed,
-// and so is one still running HalfCloseLimit after the first half-close.
-func (e *Engine) relay(conns *connSet, client, upstream net.Conn, fromClient, fromUpstream io.Reader) {
+// and so is one still running HalfCloseLimit after the first half-close. It
+// returns the bytes written towards the upstream and towards the client.
+func (e *Engine) relay(conns *connSet, client, upstream net.Conn, fromClient, fromUpstream io.Reader) (up, down int64) {
 	idle := e.IdleLimit
 	if idle == 0 {
 		idle = idleLimit
@@ -261,12 +278,13 @@ func (e *Engine) relay(conns *connSet, client, upstream net.Conn, fromClient, fr
 		once.Do(func() { cut = time.AfterFunc(half, conns.close) })
 	}
 	var wg sync.WaitGroup
-	wg.Go(func() { pipe(conns, upstream, activeReader{fromClient, quiet, idle}, halfClosed) })
-	wg.Go(func() { pipe(conns, client, activeReader{fromUpstream, quiet, idle}, halfClosed) })
+	wg.Go(func() { up = pipe(conns, upstream, activeReader{fromClient, quiet, idle}, halfClosed) })
+	wg.Go(func() { down = pipe(conns, client, activeReader{fromUpstream, quiet, idle}, halfClosed) })
 	wg.Wait()
 	if cut != nil {
 		cut.Stop()
 	}
+	return up, down
 }
 
 // activeReader puts off the idle limit each time bytes arrive.
@@ -287,13 +305,15 @@ func (a activeReader) Read(p []byte) (int, error) {
 // pipe copies one direction. A clean end is passed on as a half-close, so the
 // other direction keeps running. Any other end closes everything: a reset, or
 // a TLS stream cut without close_notify, which must not reach the other side
-// as a clean end.
-func pipe(conns *connSet, dst net.Conn, src io.Reader, halfClosed func()) {
-	if _, err := io.Copy(dst, src); err == nil {
+// as a clean end. It returns the bytes written to dst.
+func pipe(conns *connSet, dst net.Conn, src io.Reader, halfClosed func()) int64 {
+	n, err := io.Copy(dst, src)
+	if err == nil {
 		if cw, ok := dst.(closeWriter); ok && cw.CloseWrite() == nil {
 			halfClosed()
-			return
+			return n
 		}
 	}
 	conns.close()
+	return n
 }

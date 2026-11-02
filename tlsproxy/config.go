@@ -31,6 +31,8 @@ type Config struct {
 	CARequestName   string        `json:"ca_request_name"`
 	CARequestCancel int           `json:"ca_request_cancel"`
 	AutoRemove      []AutoRemoval `json:"auto_remove"`
+	// Keep state/connections.jsonl: what the proxy did with each connection.
+	LogConnections bool `json:"log_connections"`
 }
 
 // LoadConfig reads the control file. A missing file means the feature is off.

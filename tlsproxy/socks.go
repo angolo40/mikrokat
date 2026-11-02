@@ -17,11 +17,13 @@ const (
 )
 
 // Dest is where the client asked to connect. Exactly one of Host and IP is set.
-// Host is stored as sent; the caller resolves it.
+// Host is stored as sent; the caller resolves it, and keeps the name in Name
+// for the connection log.
 type Dest struct {
 	Host string
 	IP   net.IP
 	Port int
+	Name string
 }
 
 // Greet runs the SOCKS5 handshake up to the request. It offers only "no
