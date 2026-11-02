@@ -169,7 +169,8 @@ class Page(Base):
     def test_warnings_next_to_the_switch(self):
         page = web.settings_page("mikrokat.lan:8088", tab="https")
         self.assertIn("Any other bank, payment or health site is decrypted", page)
-        self.assertLess(page.index("Any other bank"), page.index('name="tls_enabled"'))
+        self.assertLess(page.index('name="tls_enabled"'), page.index("Any other bank"))
+        self.assertLess(page.index("Any other bank"), page.index('name="tls_devices"'))
 
     def test_regenerate_says_the_old_ca_stays_trusted(self):
         page = web.settings_page("mikrokat.lan:8088", tab="https")
@@ -660,7 +661,7 @@ class OwnCaTab(Web):
         self.assertIn("CN=Own CA", page)
         self.assertIn(web.time.strftime("%Y-%m-%d", web.time.localtime(1893456000)), page)
         self.assertNotIn("/tls/regenerate", page)
-        self.assertIn("Regenerate does not apply", page)
+        self.assertNotIn("Regenerate the CA", page)
         self.assertIn('href="/tls/ca.pem"', page)
 
     def test_stop_button(self):
@@ -819,8 +820,9 @@ class RequestTab(Web):
         page = self.page()
         self.assertIn("Create a key here", page)
         self.assertIn("Recommended", page)
-        self.assertIn("Or upload a certificate and key you already have", page)
-        self.assertLess(page.index("Create a key here"), page.index("Or upload a certificate and key you already have"))
+        self.assertIn("Upload a certificate and key you already have", page)
+        self.assertLess(page.index("Create a key here"), page.index("Upload a certificate and key you already have"))
+        self.assertIn("Create a key here <span", page)
         self.assertIn("never asked for", page)
         self.assertIn("plain HTTP unless you reached it through HTTPS", page)
 
@@ -882,7 +884,7 @@ class Numbers(Web):
     def test_last_refused_is_shown_and_escaped(self):
         self.stats(refused=6, last_refused="192.0.2.77", last_refused_at=int(time.time()) - 30)
         page = web.settings_page("mikrokat.lan:8088", tab="https")
-        self.assertIn("192.0.2.77", page)
+        self.assertIn("last <b>192.0.2.77</b>", page)
         self.assertIn("add it to Devices if this is your device", page)
         self.stats(refused=6, last_refused="<script>alert(1)</script>", last_refused_at="x")
         page = web.settings_page("mikrokat.lan:8088", tab="https")
@@ -892,6 +894,107 @@ class Numbers(Web):
     def test_nothing_is_said_without_one(self):
         self.stats(refused=0)
         self.assertNotIn("add it to Devices", web.settings_page("mikrokat.lan:8088", tab="https"))
+
+
+def section(page, title):
+    """The <details> of the Certificate card that starts with this title, or None."""
+    match = re.search(r'<details class="section"[^>]*><summary>' + re.escape(title) + r'.*?</details>', page, re.S)
+    return match.group(0) if match else None
+
+
+class Layout(Web):
+    def page(self):
+        return web.settings_page("mikrokat.lan:8088", tab="https")
+
+    def test_cards_come_in_the_decided_order(self):
+        self.stats(at=int(time.time()))
+        page = self.page()
+        marks = ['<div class="status">', "<h2>Inspection", "<h2>Exceptions", "<h2>Certificate", "<h2>Connection log", "<summary>Advanced</summary>"]
+        positions = [page.index(m) for m in marks]
+        self.assertEqual(positions, sorted(positions))
+        for later, earlier in (("Never inspect these names</span>", "Skip the bank list"), ("Skipped automatically</h3>", "Never inspect these names</span>")):
+            self.assertLess(page.index(earlier), page.index(later))
+        self.assertNotIn("<h2>Numbers</h2>", page)
+
+    def test_every_field_is_still_in_the_page_and_posted(self):
+        page = self.page()
+        main = page[page.index('<form method="post" action="/settings"'):]
+        for name in ("tls_enabled", "tls_devices", "tls_bank_list", "tls_bypass", "tls_log", "tls_socks", "tls_socks_port"):
+            self.assertIn(f'name="{name}"', main, name)
+        forms = Forms()
+        forms.feed(page)
+        mine = {c.get("name") for c in forms.controls if c["owner"] == "/settings"}
+        for name in ("tls_enabled", "tls_bank_list", "tls_log", "tls_socks", "tls_socks_port"):
+            self.assertIn(name, mine, name)
+        self.assertEqual(re.findall(r'<textarea name="(tls_\w+)"', main), ["tls_devices", "tls_bypass"])
+
+    def test_a_save_keeps_every_value(self):
+        values = dict(tls_enabled="on", tls_socks="on", tls_log="on", tls_bank_list="on", tls_devices="10.0.0.5\n10.0.0.6", tls_bypass="a.example\nb.example", tls_socks_port="1090")
+        self.assertIsNone(store.save_settings(full_form(**values)))
+        s = store.settings
+        self.assertEqual((s["tls_enabled"], s["tls_socks"], s["tls_log"], s["tls_bank_list"], s["tls_socks_port"]), (True, True, True, True, 1090))
+        self.assertEqual((s["tls_devices"], s["tls_bypass"]), (["10.0.0.5", "10.0.0.6"], ["a.example", "b.example"]))
+        page = self.page()
+        self.assertIn("10.0.0.5\n10.0.0.6</textarea>", page)
+        self.assertIn('value="1090"', page)
+        for name in ("tls_enabled", "tls_socks", "tls_log", "tls_bank_list"):
+            self.assertRegex(page, rf'name="{name}" checked')
+
+    def test_the_import_error_is_outside_the_closed_sections(self):
+        self.stats(ca_import_error="the key does not match the first certificate")
+        page = self.page()
+        error = page.index("the key does not match")
+        self.assertLess(page.index("<h2>Certificate"), error)
+        self.assertLess(error, page.index('<details class="section"'))
+
+    def test_regenerate_is_hidden_with_an_own_ca(self):
+        self.stats(ca_own=False)
+        self.assertIsNotNone(section(self.page(), "Regenerate the CA"))
+        self.stats(ca_own=True, ca_subject="CN=Own CA", ca_chain=1, ca_expires=1893456000)
+        page = self.page()
+        self.assertIsNone(section(page, "Regenerate the CA"))
+        self.assertLess(page.index("Stop using my CA"), page.index('<details class="section"'))
+
+    def test_a_pending_request_opens_its_section_and_only_that(self):
+        self.stats(ca_request_pending=False)
+        self.assertNotIn("<details class=\"section\" name=\"ca-way\" open", self.page())
+        self.stats(ca_request_pending=True, ca_request_name="Home CA")
+        page = self.page()
+        self.assertIn(" open>", section(page, "Create a key here")[:80])
+        self.assertNotIn(" open>", section(page, "Upload a certificate")[:80])
+
+    def test_the_upload_warning_is_inside_its_section(self):
+        self.assertIn("plain HTTP unless you reached it", section(self.page(), "Upload a certificate"))
+
+    def test_the_status_row(self):
+        now = int(time.time())
+        self.stats(at=now, inspected=12, relayed={"bank_list": 3, "<b>x</b>": 4}, refused=2, last_refused="<script>alert(1)</script>", ca_subject="CN=<img src=x>", ca_expires=1893456000)
+        store.settings["tls_enabled"] = True
+        page = self.page()
+        row = page[page.index('<div class="status">'):page.index("</div>", page.index('<div class="status">'))]
+        self.assertIn("On</span>", row)
+        self.assertIn("<b>12</b> inspected", row)
+        self.assertIn("<b>7</b> passed", row)
+        self.assertIn("Refused <b>2</b>", row)
+        self.assertIn('href="/connections"', row)
+        self.assertIn(web.time.strftime("%Y-%m-%d", web.time.localtime(1893456000)), row)
+        self.assertNotIn("<script>alert(1)", page)
+        self.assertNotIn("<img src=x>", page)
+        self.assertIn("&lt;script&gt;alert(1)", row)
+        self.assertIn("&lt;img src=x&gt;", row)
+
+    def test_the_status_row_says_off_and_copes_with_no_numbers(self):
+        os.remove(os.path.join(store.TLS_DIR, "state", "stats.json"))
+        page = self.page()
+        self.assertIn('<i class="dot idle"></i>Off', page)
+        self.assertIn("No numbers from the proxy yet", page)
+
+    def test_the_beta_marks(self):
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertIn('<label for="tab-https">HTTPS inspection <span class="badge beta">Beta</span></label>', page)
+        self.assertIn('<h2>Inspection <span class="badge beta">Beta</span></h2>', page)
+        self.assertIn("in beta. It has been tested on one network, so expect rough edges", page)
+        self.assertLess(page.index("in beta."), page.index('<div class="status">'))
 
 
 class Upload(Base):

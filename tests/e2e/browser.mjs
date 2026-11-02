@@ -20,6 +20,7 @@ const PASSWORD = process.env.MK_PASSWORD ?? '';
 const CA_NAME = 'Mikrokat E2E requested CA';
 const PAIR_NAME = 'Mikrokat E2E pair CA';
 const TABS = ['protection', 'notifications', 'router', 'data', 'ai', 'https', 'account'];
+const rgb = (text) => (text.match(/[\d.]+/g) ?? []).slice(0, 3).join(',');
 const SHORT = 8000;
 const LONG = 30000;
 
@@ -104,6 +105,126 @@ async function switchOn(page) {
   await shot(page, 'https-on');
 }
 
+// The HTTPS inspection tab as the owner sees it: cards in order, closed sections that open on a click, a Save bar
+// that stays off the field being edited, and no sideways scroll on a phone, in light and dark.
+async function layout(page) {
+  const pane = page.locator('#pane-https');
+  const sectionOf = (title) => page.locator(`details.section:has(> summary:has-text("${title}"))`);
+  const noSideways = async (what) => {
+    if (await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) fail(`${what}: the page scrolls sideways`);
+  };
+
+  step('the beta marks: the tab, the line at the top, the Inspection heading');
+  await openHttps(page);
+  await shown(page.locator('.tabbar label[for=tab-https] .badge:has-text("Beta")'), 'the Beta mark on the tab');
+  await shown(pane.locator('h2:has-text("Inspection") .badge:has-text("Beta")'), 'the Beta mark on the Inspection heading');
+  await shown(pane.locator('p.note:has-text("in beta. It has been tested on one network")'), 'the beta line');
+
+  step('the cards come in order: status, Inspection, Exceptions, Certificate, Connection log, Advanced');
+  const tops = await page.evaluate(() => {
+    const top = (el) => el.getBoundingClientRect().top + window.scrollY;
+    const heads = [...document.querySelectorAll('#pane-https .card > h2, #pane-https details.advanced > summary')];
+    return { beta: top(document.querySelector('#pane-https > p.note')), status: top(document.querySelector('#pane-https .status')),
+             cards: heads.map((h) => [h.textContent.replace('Beta', '').trim(), top(h)]) };
+  });
+  const names = tops.cards.map((c) => c[0]);
+  if (JSON.stringify(names) !== JSON.stringify(['Inspection', 'Exceptions', 'Certificate', 'Connection log', 'Advanced'])) fail(`the cards are ${JSON.stringify(names)}`);
+  const ys = [tops.beta, tops.status, ...tops.cards.map((c) => c[1])];
+  if (ys.some((y, i) => i && y <= ys[i - 1])) fail(`the cards are out of order: ${JSON.stringify(ys)}`);
+  await shown(pane.locator('.status:has-text("On"):has(a[href="/connections"])'), 'the status row with the Connections link');
+  await shown(pane.locator('.status .fact:has-text("CA")'), 'the CA in the status row');
+  await shown(pane.locator('.status .fact:has-text("inspected")'), 'Inspected in the status row');
+  await shown(pane.locator('.status .fact:has-text("Refused")'), 'Refused in the status row');
+  if ((await pane.locator('h2:has-text("Numbers")').count()) !== 0) fail('the Numbers card is still there');
+
+  step('the fields stand at equal width, the skip list has a fixed height and scrolls');
+  const widths = await page.evaluate(() => ['textarea[name=tls_devices]', 'textarea[name=tls_bypass]', 'input[name=tls_socks_port]'].map((s) => document.querySelector(s)).map((e) => e.closest('.field').getBoundingClientRect().width));
+  if (Math.abs(widths[0] - widths[1]) > 1) fail(`the two lists differ in width: ${widths}`);
+  const list = await page.locator('textarea[name=tls_bypass]').evaluate((el) => ({ h: el.clientHeight, lh: parseFloat(getComputedStyle(el).lineHeight), overflow: getComputedStyle(el).overflowY, resize: getComputedStyle(el).resize }));
+  if (list.h < list.lh * 9 || list.h > list.lh * 11.5 || list.resize !== 'none') fail(`the skip list is ${JSON.stringify(list)}`);
+
+  step('the closed sections open on a click, one at a time');
+  for (const title of ['Create a key here', 'Upload a certificate and key you already have', 'Regenerate the CA']) await shown(sectionOf(title).locator('> summary'), `the ${title} summary`);
+  await hidden(page.locator('input[name=ca_request_name]'), 'the CA name field while its section is closed');
+  await hidden(page.locator('input[type=file][name=key][form=own-ca]'), 'the key upload while its section is closed');
+  await hidden(page.locator('button:has-text("Regenerate the CA")'), 'Regenerate while its section is closed');
+  await sectionOf('Create a key here').locator('> summary').click();
+  await shown(page.locator('input[name=ca_request_name]'), 'the CA name field after the click');
+  await sectionOf('Upload a certificate and key you already have').locator('> summary').click();
+  await shown(page.locator('input[type=file][name=key][form=own-ca]'), 'the key upload after the click');
+  await shown(sectionOf('Upload a certificate and key you already have').locator('.note.error:has-text("plain HTTP")'), 'the plain HTTP warning inside its section');
+  await hidden(page.locator('input[name=ca_request_name]'), 'the CA name field once another section opened');
+  await sectionOf('Regenerate the CA').locator('> summary').click();
+  await shown(page.locator('button:has-text("Regenerate the CA")'), 'Regenerate after the click');
+  await shown(pane.locator('.ca-line a[href="/tls/ca.pem"]'), 'the Download link in the first line');
+  const space = await page.locator('details.section > summary:has-text("Create a key here")').evaluate((el) => el.textContent);
+  if (!/Create a key here\s+Recommended/.test(space)) fail(`no space before the badge: ${JSON.stringify(space)}`);
+
+  step('Advanced is closed, and holds the SOCKS switch, port and address');
+  await hidden(page.locator('input[name=tls_socks_port]'), 'the SOCKS port while Advanced is closed');
+  await page.locator('details.advanced > summary').click();
+  await shown(page.locator('input[name=tls_socks_port]'), 'the SOCKS port after the click');
+  await shown(page.locator('label.switch:has-text("Offer the SOCKS entry point")'), 'the SOCKS switch');
+  await shown(page.locator('details.advanced code:has-text("/tls.pac")'), 'the automatic proxy configuration address');
+  await page.locator('details.advanced > summary').click();
+
+  step('the Save bar does not cover the field being edited');
+  await page.setViewportSize({ width: 1280, height: 520 });
+  const clear = async (selector) => {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.locator(selector).focus();
+    await page.waitForTimeout(200);
+    const r = await page.evaluate((s) => {
+      const f = document.querySelector(s).getBoundingClientRect(), bar = document.querySelector('.savebar').getBoundingClientRect(), head = document.querySelector('header').getBoundingClientRect();
+      return { fieldTop: f.top, fieldBottom: f.bottom, barTop: bar.top, headBottom: head.bottom, vh: window.innerHeight };
+    }, selector);
+    if (r.fieldBottom > r.barTop + 1 && r.fieldTop < r.vh) fail(`the Save bar covers ${selector}: ${JSON.stringify(r)}`);
+    if (r.fieldTop < r.headBottom - 1) fail(`the header covers ${selector}: ${JSON.stringify(r)}`);
+  };
+  await clear('textarea[name=tls_devices]');
+  await clear('textarea[name=tls_bypass]');
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await clear('textarea[name=tls_bypass]');
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  step('screenshots: light, dark, sections open, and a phone in both');
+  // A full page screenshot puts a sticky bar at the foot of the first screen, so the shots show it in flow.
+  const flat = () => page.addStyleTag({ content: '.savebar { position: static !important; }' });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await openHttps(page);
+  await noSideways('light');
+  await flat();
+  await shot(page, 'https-layout-light');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await openHttps(page);
+  if (rgb(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)) === '252,252,251') fail('dark mode kept the light page');
+  await noSideways('dark');
+  await flat();
+  await shot(page, 'https-layout-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await openHttps(page);
+  // Opening several at once means dropping the shared name, which only the screenshot needs.
+  await page.evaluate(() => document.querySelectorAll('#pane-https details').forEach((d) => { d.removeAttribute('name'); d.open = true; }));
+  await noSideways('open sections');
+  await flat();
+  await shot(page, 'https-layout-open');
+  await page.setViewportSize({ width: 390, height: 800 });
+  for (const scheme of ['dark', 'light']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await openHttps(page);
+    await noSideways(`phone ${scheme}`);
+    await flat();
+    await page.evaluate(() => document.querySelectorAll('#pane-https details').forEach((d) => { d.removeAttribute('name'); d.open = true; }));
+    await noSideways(`phone ${scheme} with the sections open`);
+    await page.evaluate(() => document.querySelectorAll('#pane-https details').forEach((d) => { d.open = false; }));
+    if (scheme === 'light') await shot(page, 'https-layout-phone');
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.emulateMedia({ colorScheme: null });
+  await openHttps(page);
+}
+
 async function download(page, selector, file) {
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click(selector)]);
   await dl.saveAs(`${OUT}/${file}`);
@@ -115,13 +236,17 @@ async function request(page) {
   await signIn(page);
   await tabs(page);
   await switchOn(page);
+  await layout(page);
 
-  step('the Create a key here card is on the tab');
-  await shown(page.locator('h2:has-text("Create a key here")'), 'the Create a key here heading');
+  step('the Create a key here section is on the tab, closed until a click');
+  const create = page.locator('details.section:has(> summary:has-text("Create a key here"))');
+  await shown(create.locator('> summary'), 'the Create a key here heading');
   await shown(page.locator('.recommended'), 'the Recommended mark');
+  if (await create.evaluate((el) => el.open)) fail('the Create a key here section is open with no request pending');
+  await create.locator('> summary').click();
   await shown(page.locator('input[name=ca_request_name]'), 'the CA name field');
   await shown(page.locator('button:has-text("Create request")'), 'the Create request button');
-  await shown(page.locator('h3:has-text("Or upload a certificate and key you already have")'), 'the heading of the two-file form');
+  await shown(page.locator('details.section > summary:has-text("Upload a certificate and key you already have")'), 'the heading of the two-file form');
   await shot(page, 'create-card');
 
   step('the skip list opens prefilled with the defaults, and they survive a save');
@@ -146,9 +271,13 @@ async function request(page) {
   await shot(page, 'bank-list-switch');
 
   step('create a request');
+  // Each page load starts with the sections closed while nothing is pending.
+  if (!(await create.evaluate((el) => el.open))) await create.locator('> summary').click();
   await page.fill('input[name=ca_request_name]', CA_NAME);
   await Promise.all([page.waitForURL(/ok=ca-requested/), page.click('button:has-text("Create request")')]);
   await untilShown(page, page.locator('a[href="/tls/own-ca.csr"]'), 'the Download request link');
+  if (!(await create.evaluate((el) => el.open))) fail('a pending request did not open its section');
+  if (await page.locator('details.section:has(> summary:has-text("Upload a certificate and key you already have"))').evaluate((el) => el.open)) fail('the upload section opened with the request');
   await shown(page.locator('a[href="/tls/own-ca.ext"]'), 'the Download extensions link');
   await shown(page.locator('code.command'), 'the signing command');
   await shown(page.locator('button:has-text("Cancel request")'), 'the Cancel request button');
@@ -185,10 +314,13 @@ async function pair(page) {
   sh('openssl x509 -req -in pair.csr -CA root.crt -CAkey root.key -CAcreateserial -days 2 -sha256 -extfile mikrokat-ca.ext -out pair.pem', OUT);
   sh('cat pair.pem root.crt > pair-chain.pem', OUT);
   await openHttps(page);
+  await page.locator('details.section > summary:has-text("Upload a certificate and key you already have")').click();
   await page.locator('input[type=file][name=chain][form=own-ca]').setInputFiles(`${OUT}/pair-chain.pem`);
   await page.locator('input[type=file][name=key][form=own-ca]').setInputFiles(`${OUT}/pair.key`);
   await Promise.all([page.waitForURL(/ok=ca-uploaded/), page.click('button[form=own-ca]:has-text("Upload")')]);
   await untilShown(page, page.locator(`text=In use: your own CA, CN=${PAIR_NAME}`), 'the CA of the pair');
+  await shown(page.locator('.ca-line button:has-text("Stop using my CA")'), 'Stop using my CA in the first line');
+  await hidden(page.locator('details.section > summary:has-text("Regenerate the CA")'), 'the Regenerate section with an own CA');
   await shot(page, 'pair-installed');
 
   step('press Stop using my CA');
@@ -219,8 +351,6 @@ async function names(page) {
   await shown(last, 'the last known device after scrolling');
   await shot(page, 'known-devices');
 }
-
-const rgb = (text) => (text.match(/[\d.]+/g) ?? []).slice(0, 3).join(',');
 
 async function connections(page) {
   await signIn(page);

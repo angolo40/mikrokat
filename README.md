@@ -16,7 +16,7 @@ It is the lightweight successor of [mikrocata2selks](https://github.com/angolo40
 - **Health alarms:** warns you if traffic stops arriving, the rules get old, the disk fills up or the router stops answering.
 - **Automatic rule updates:** daily or weekly, without stopping Suricata.
 - **Live page:** alerts and actions as they happen, with repeats grouped.
-- **HTTPS inspection:** optional and off by default. Suricata can read the HTTPS of the devices you choose.
+- **HTTPS inspection (beta):** optional and off by default. Suricata can read the HTTPS of the devices you choose. HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.
 - **Blocking:** automatic or by hand, through a MikroTik address list. Blocks are put back after a router restart, and repeat offenders can be blocked for longer.
 - **Safe by default:** starts in Monitor mode, which only reports. Private networks and major DNS servers are protected from blocks.
 - **Notifications:** Telegram, email and webhooks for Slack, Discord, Microsoft Teams or your own service, plus an optional daily summary.
@@ -162,7 +162,9 @@ Mikrokat starts from ET Open and updates it every day at 04:00. You can change t
 
 To keep a rule in Events but stop its notifications and blocks, use **Mute**.
 
-## HTTPS inspection
+## HTTPS inspection (beta)
+
+HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.
 
 Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate chain, name and dates, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It makes a copy of the traffic in memory and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
 
@@ -172,7 +174,7 @@ It is off by default. The proxy only reads: it never changes traffic, and blocki
 
 ### What stays encrypted
 
-Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab counts by reason the connections that reach the proxy. Programs that do not use the proxy, QUIC, and bytes past the first 1 MiB have no counter.
+Suricata sees nothing inside these. The status row at the top of the HTTPS inspection tab counts by reason the connections that reach the proxy. Programs that do not use the proxy, QUIC, and bytes past the first 1 MiB have no counter.
 
 - Devices that are not on your list, and programs on a listed device that do not use the proxy.
 - Names on the downloaded bank list, while **Skip the bank list** is on (the default). The proxy downloads [the bank list of the Université Toulouse Capitole](https://dsi.ut-capitole.fr/blacklists/) (`bank.tar.gz`, from dsi.ut-capitole.fr, see their page for the terms of use) as soon as inspection is on and there is no copy, then every 30 days, and again after 6 hours if a download fails. It takes only the `bank/domains` entry, at most 5 MiB downloaded and 2 MiB unpacked, keeps only valid names, and accepts the file only with at least 1,000 of them. It keeps the copy in `data/tls/state/bank-list.txt`, which is not part of this repository, and a failed download never empties the copy in use. The tab shows how many names it holds, the date and the last error. Those connections are counted as `bank_list`. The list covers many banks but not all, and it is not shown in the Never inspect field, so add yours there if it is missing. It is a third-party list you do not control: if it were compromised, the worst it could do is make Mikrokat skip inspection of the names in it, never decrypt more. Switch it off to download nothing and skip nothing by it.
@@ -262,7 +264,7 @@ The log shows which sites each listed device visited, so the consent note above 
 - **Two stores keep those URLs.** EVE follows **Keep logs for** on the Data tab, 1 to 90 days, up to 4 GB. EveBox stays at 7 days and 4 GB whatever is set, so lowering **Keep logs for** does not remove URLs from EveBox.
 - **Root on the host sees the plaintext.** It can capture it on `tzsp0`, up to the copy limit, though nothing stores it.
 - **The CA key can impersonate any site** to every device that trusts it. The generated key stays in `data/tls/private`, which only the proxy can read, but a backup of the host contains it. An own CA's key is less closed: it passes through the memory of the web app and waits in `data/tls/incoming` until the proxy takes it (the proxy deletes it from there within seconds, also when it refuses it), and then it sits in `data/tls/private` too. If a generated key may have leaked, use **Regenerate the CA**, delete the old `Mikrokat local CA` from every device and import the new certificate. Regenerate does not apply to an own CA: revoke that CA the way you run it, and upload a new one. A new CA does not revoke the old one: a device keeps trusting the old key until you delete it there.
-- **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** on the Numbers card shows it. Frames can also be lost between the proxy and `tzsp` when the host is overloaded. That loss is not counted there, and `tests/e2e/run.sh` checks for it.
+- **Copies are paced.** The copy for Suricata goes out at about 10 MB/s, and its queue holds 64 MiB. Above that rate the queue fills, and Suricata misses the rest of those connections while they keep working. With 200 downloads of 1 MiB, 100 at a time, that happened to 25 to 43 of them. **Copies dropped** in the line under the status row on the HTTPS inspection tab shows it. Frames can also be lost between the proxy and `tzsp` when the host is overloaded. That loss is not counted there, and `tests/e2e/run.sh` checks for it.
 - **Connections are limited.** The proxy holds at most 512 connections, 128 per device, and closes any over that at once. It closes a connection after 10 minutes with no bytes in either direction, which also ends a quiet websocket, and 60 seconds after one side has finished, so a hostile server cannot hold them open.
 - **Decrypted alerts never block.** They are recorded as `Would block`, also in Block mode. A web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.
 - **HTTP/1.1 only.** The proxy offers no HTTP/2, so sites answer over HTTP/1.1. A program that speaks only HTTP/2 is refused, and the automatic bypass does not apply to it, because the program never rejected the certificate. Add its names to the bypass list. The same goes for a program that only speaks a TLS version older than 1.2.

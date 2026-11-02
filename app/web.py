@@ -101,6 +101,10 @@ def ai_preset_for(url):
 SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("https", "HTTPS inspection"), ("account", "Account"))
 
 
+BETA_TABS = ("https",)
+BETA_MARK = ' <span class="badge beta">Beta</span>'
+
+
 def tab_css(tabs):
     """The rules that show a tab's pane, mark its label, and show its block of the guide. One set for each tab, so a new tab cannot stay hidden."""
     return "\n".join(
@@ -236,7 +240,7 @@ pre { background: var(--raised); border-radius: 8px; padding: 10px; overflow-x: 
 .howto ol { padding-left: 20px; margin: 8px 0; }
 .howto p { color: var(--muted); margin: 6px 0; }
 .scroll { max-height: 220px; overflow-y: auto; margin: 8px 0 0; padding-left: 20px; }
-.recommended { margin-left: 8px; vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
+.recommended, .beta { margin-left: 4px; vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
 .command { display: block; margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--raised); font-size: 12px; overflow-x: auto; white-space: pre; user-select: all; }
 .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 12px; position: relative; }
 .switch span { width: 38px; height: 22px; flex: none; border-radius: 11px; background: var(--line); position: relative; transition: background .15s; }
@@ -244,7 +248,43 @@ pre { background: var(--raised); border-radius: 8px; padding: 10px; overflow-x: 
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { transform: translateX(16px); }
 .actions { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.savebar { position: sticky; bottom: 0; display: flex; justify-content: flex-end; padding: 12px 0; background: linear-gradient(transparent, var(--surface) 35%); }
+.savebar { position: sticky; bottom: 0; z-index: 4; display: flex; justify-content: flex-end; padding: 12px 0; background: var(--surface); border-top: 1px solid var(--line); }
+html { scroll-padding-top: 70px; scroll-padding-bottom: 90px; }
+textarea { display: block; }
+.field textarea, .field select { width: 100%; }
+textarea.tall { height: calc(13px * 1.5 * 10 + 22px); line-height: 1.5; resize: none; overflow-y: auto; }
+#pane-https .when-on { display: none; }
+#pane-https:has(input[name=tls_enabled]:checked) .when-on { display: block; }
+#pane-https .card > * { margin-top: 0; margin-bottom: 0; }
+#pane-https .card > * + * { margin-top: 12px; }
+#pane-https .card > h2 + p, #pane-https .card > h2 + .logrow { margin-top: 4px; }
+#pane-https .card .when-on > * + *, #pane-https .inner > * + * { margin-top: 12px; }
+#pane-https .switch { margin: 0; }
+#pane-https .card > .switch + p { margin-top: 4px; }
+#pane-https .hint.under { margin: -6px 0 0 48px; }
+#pane-https .note { margin: 0; }
+#pane-https > p.note { margin-bottom: 14px; }
+#pane-https .status { margin-bottom: 6px; gap: 6px 16px; }
+#pane-https .status .state { margin-right: 0; }
+#pane-https .status a { margin-left: auto; }
+#pane-https textarea[name=tls_devices] { min-height: 96px; }
+#pane-https .status a { font-size: 13px; }
+#pane-https .fine { margin: 0 2px 16px; }
+#pane-https .card h3 { font-size: 14px; margin: 18px 0 0; font-weight: 600; }
+#pane-https .card h3 + p { margin-top: 2px; }
+#pane-https .ca-line, .logrow { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+#pane-https .logrow .switch { margin-right: 4px; }
+.skips { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.skips li { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.skips .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+details.section { border: 1px solid var(--line); border-radius: 10px; margin-top: 10px; }
+details.section > summary, details.advanced > summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 10px 14px; }
+details.advanced > summary { font-size: 16px; padding: 0; }
+details.section .inner { padding: 2px 14px 14px; }
+details.section .inner > * + * { margin-top: 12px; }
+details.advanced:not([open]) { padding-bottom: 14px; }
+.steps { padding-left: 20px; margin: 8px 0 0; }
+.command { max-width: 100%; }
 form > input[name=tab] { position: absolute; opacity: 0; width: 0; height: 0; }
 .tabbar { display: flex; gap: 2px; padding: 3px; margin-bottom: 14px; background: var(--raised); border-radius: 10px; overflow-x: auto; scrollbar-width: none; }
 .tabbar label { padding: 6px 14px; border-radius: 8px; color: var(--muted); cursor: pointer; white-space: nowrap; }
@@ -937,35 +977,40 @@ def parse_upload(content_type, body):
     return fields or None
 
 
+def ca_section(title, body, opened=False, badge=""):
+    """One closed part of the Certificate card. They share a name, so opening one closes the others."""
+    mark = f' <span class="badge {badge[0]}">{badge[1]}</span>' if badge else ""
+    return f'<details class="section" name="ca-way"{" open" if opened else ""}><summary>{title}{mark}</summary><div class="inner">{body}</div></details>'
+
+
 def own_ca_card(stats):
-    """The CA in use and the upload form. The subject and the reasons come from an uploaded file."""
+    """The Certificate card: the CA in use, then the ways to change it. The subject and the reasons come from an uploaded file."""
     own = stats.get("ca_own") is True
     chain = stats.get("ca_chain")
     expires = stats.get("ca_expires")
     until = esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(expires))) if isinstance(expires, int) and expires > 0 else "unknown"
     subject = esc(str(stats.get("ca_subject") or ""))
     if own and isinstance(chain, int) and chain > 0:
-        state = f'<p>In use: your own CA, {subject}, valid until {until}. Certificates in its chain: {chain}.</p>'
+        state = f'In use: your own CA, {subject}, valid until {until}. Certificates in its chain: {chain}.'
     elif own:
         reason = esc(str(stats.get("error") or "no reason given"))
-        state = (f'<p class="note error">Your own CA cannot be used: {reason}. The port stays closed, and the generated CA does not take over by itself. '
-                 'Upload a valid CA, or stop using yours.</p>')
+        state = (f'<span class="error">Your own CA cannot be used: {reason}.</span> The port stays closed, and the generated CA does not take over by itself. '
+                 'Upload a valid CA, or stop using yours.')
     elif subject:
-        state = f'<p>In use: the CA Mikrokat generated, {subject}, valid until {until}.</p>'
+        state = f'In use: the CA Mikrokat generated, {subject}, valid until {until}.'
     else:
-        state = '<p>In use: the CA Mikrokat generates when you turn this on.</p>'
+        state = 'In use: the CA Mikrokat generates when you turn this on.'
+    # The import error stays outside the closed sections, so it is seen without opening anything.
     refused = f'<p class="note error">The CA in use has not changed: {esc(str(stats["ca_import_error"]))}.</p>' if stats.get("ca_import_error") else ""
-    stop = ('<div class="actions"><button class="ghost" formaction="/tls/own-ca/remove" onclick="return confirm(\'Stop using your CA? The proxy goes back to the generated CA, and devices then need that one.\')">Stop using my CA</button></div>'
-            '<p class="hint">Devices then need the generated CA: download it from this tab and import it.</p>') if own else ""
+    stop = ('<button class="ghost" formaction="/tls/own-ca/remove" onclick="return confirm(\'Stop using your CA? The proxy goes back to the generated CA, and devices then need that one.\')">Stop using my CA</button>') if own else ""
+    stop_hint = '<p class="hint">Devices then need the generated CA: download it from this tab and import it.</p>' if own else ""
     # With the proxy down nothing would take the files, and the key would stay in the folder.
     off = "" if store.tls_running(stats) else " disabled"
     silent = ('<p class="note error">The proxy is not running, so an upload would not be processed. Start it, then upload.</p>' if off else "")
     pending = stats.get("ca_request_pending") is True
-    running = store.tls_running(stats)
     request_name = esc(str(stats.get("ca_request_name") or ""))
     again = "" if not pending else ' onclick="return confirm(\'A request is already pending. Make a new one? The pending key is deleted, and a certificate signed for it will no longer fit.\')"'
-    create = (f'<section class="card"><h2>Create a key here<span class="badge recommended">Recommended</span></h2>'
-              '<p>The proxy makes the key and keeps it, and you sign a request with your own root. The key never crosses the network, and the root key is never asked for: signing happens on your machine, not on this page.</p>'
+    create = ('<p>The proxy makes the key and keeps it, and you sign a request with your own root. The key never crosses the network, and the root key is never asked for: signing happens on your machine, not on this page.</p>'
               f'{silent}'
               f'<label class="field"><span>CA name</span><input type="text" name="ca_request_name" form="own-ca-request" value="Mikrokat Inspection CA" maxlength="64" required{off}>'
               '<span class="hint">1 to 64 printable ASCII characters. It becomes the name of the CA on every device.</span></label>'
@@ -980,15 +1025,19 @@ def own_ca_card(stats):
                    '<span class="hint">PEM. No key is needed: the proxy has it.</span></label>'
                    f'<div class="actions"><button form="own-ca-signed"{off}>Upload signed certificate</button>'
                    '<button class="ghost" form="own-ca-cancel" onclick="return confirm(\'Cancel the request? The pending key and request are deleted.\')">Cancel request</button></div>')
-    create += '</section>'
-    return (create + f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}'
-            '<h3>Or upload a certificate and key you already have</h3>'
-            '<p class="note error">This page is plain HTTP unless you reached it through HTTPS, so the private key crosses the network unencrypted. Upload only from a trusted network.</p>'
-            f'<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required{off}>'
-            '<span class="hint">PEM. The signing CA first, then any intermediates, up to the root if you like.</span></label>'
-            f'<label class="field"><span>Private key</span><input type="file" name="key" form="own-ca" required{off}>'
-            '<span class="hint">PEM and unencrypted, for the first certificate. RSA, ECDSA or Ed25519.</span></label>'
-            f'<div class="actions"><button form="own-ca"{off}>Upload</button></div>{stop}</section>')
+    upload = ('<p class="note error">This page is plain HTTP unless you reached it through HTTPS, so the private key crosses the network unencrypted. Upload only from a trusted network.</p>'
+              f'<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required{off}>'
+              '<span class="hint">PEM. The signing CA first, then any intermediates, up to the root if you like.</span></label>'
+              f'<label class="field"><span>Private key</span><input type="file" name="key" form="own-ca" required{off}>'
+              '<span class="hint">PEM and unencrypted, for the first certificate. RSA, ECDSA or Ed25519.</span></label>'
+              f'<div class="actions"><button form="own-ca"{off}>Upload</button></div>')
+    regenerate = ('<p>Makes a new CA for the proxy to sign with.</p><div class="actions"><button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button></div>')
+    sections = (ca_section("Create a key here", create, opened=pending, badge=("recommended", "Recommended"))
+                + ca_section("Upload a certificate and key you already have", upload)
+                + ("" if own else ca_section("Regenerate the CA", regenerate)))
+    return (f'<section class="card"><h2>Certificate</h2>{refused}'
+            f'<div class="ca-line"><span>{state}</span><a href="/tls/ca.pem">Download the CA certificate</a>{stop}</div>{stop_hint}'
+            f'<p class="hint">If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{sections}</section>')
 
 
 def bypass_field():
@@ -1030,12 +1079,42 @@ def bank_list_status(stats):
     return esc(text)
 
 
+def https_status(s, stats):
+    """The row at the top of the tab. Everything from stats.json came from the proxy or from client traffic, so it is escaped."""
+    running = store.tls_running(stats)
+    if not s["tls_enabled"]:
+        state = '<i class="dot idle"></i>Off'
+    elif running:
+        state = '<i class="dot"></i>On'
+    else:
+        state = '<i class="dot off"></i>On, the proxy is not answering'
+    row = f'<span class="state">{state}</span>'
+    if stats:
+        expires = stats.get("ca_expires")
+        name = str(stats.get("ca_subject") or "")
+        found = re.search(r"CN\s*=\s*([^,/]+)", name)
+        name = (found.group(1) if found else name).strip()[:40]
+        if name:
+            when = f' until <b>{esc(time.strftime("%Y-%m-%d", time.localtime(expires)))}</b>' if isinstance(expires, int) and not isinstance(expires, bool) and expires > 0 else ""
+            row += f'<span class="fact">CA <b>{esc(name)}</b>{when}</span>'
+        else:
+            row += '<span class="fact">CA <b>not made yet</b></span>'
+        relayed = stats.get("relayed") if isinstance(stats.get("relayed"), dict) else {}
+        passed = sum(v for v in relayed.values() if isinstance(v, int) and not isinstance(v, bool))
+        last = stats.get("last_refused")
+        last_text = f', last <b>{esc(last)}</b>' if isinstance(last, str) and last else ""
+        row += (fact(str(stats.get("inspected", 0)), "inspected") + fact(number(passed), "passed")
+                + f'<span class="fact">Refused <b>{esc(str(stats.get("refused", 0)))}</b>{last_text}</span>')
+        if isinstance(stats.get("at"), int):
+            row += f'<span class="fact">Updated <b>{max(int(time.time()) - stats["at"], 0)} s ago</b></span>'
+    row += '<a href="/connections">Connections</a>'
+    return f'<div class="status">{row}</div>'
+
+
 def https_card(host, switch, field):
     """The HTTPS inspection tab. Names in stats.json came from client traffic, so everything from it is escaped."""
     s = store.settings
     stats = store.tls_status()
-    regenerate = ('<span class="hint">Regenerate does not apply: this is your own CA. Replace it or stop using it below.</span>' if stats.get("ca_own") is True else
-                  '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button>')
     # A copy, because the poller adds names while this page is built. All of them, by name, in a list that scrolls.
     known_names = sorted(dict(store.names).items(), key=lambda item: (str(item[1]).lower(), item[0]))
     names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in known_names)
@@ -1045,47 +1124,51 @@ def https_card(host, switch, field):
     warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in EVE for as long as Keep logs for says, and in EveBox for 7 days whatever is set. '
                'Inspect only your own devices, or with the consent of the person using them.</p>'
                '<p class="note">The list under Never inspect these names starts with a few banks, health and public services, and update services. Any other bank, payment or health site is decrypted unless you add it there first.</p>')
-    options = (switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + '<div class="reveal">'
-               + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
-               + switch("tls_log", "Keep a log of connections", s["tls_log"])
-               + '<p class="hint">This log shows which sites each listed device visited, so the consent note above applies. It holds no URLs or content. '
-               'Turning it off stops new lines and keeps what is there. See it on the <a href="/connections">Connections page</a>.</p>'
-               '<div class="actions"><button class="ghost" formaction="/tls/log/delete" onclick="return confirm(\'Delete the connection log? Both log files are removed and the Connections page starts empty. This cannot be undone.\')">Delete the log</button></div>'
-               + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
-               f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
-               f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
-               f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}'
-               + switch("tls_bank_list", "Skip the bank list", s["tls_bank_list"])
-               + '<p class="hint">The proxy downloads a list of bank domains from the Université Toulouse Capitole and skips them. It covers many banks but not all, '
-               'and it is not shown in the field below, so add yours there if it is missing. ' + bank_list_status(stats) + '</p>'
-               f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="8">{esc(chr(10).join(bypass_names))}</textarea>{bypass_flag}'
-               f'<span class="hint">{bypass_hint}</span></label>'
-
-               f'<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>{regenerate}</div>')
+    # Cards marked when-on follow the main switch, as the fields under it did before the tab was split in cards.
+    inspection = ('<section class="card"><h2>Inspection <span class="badge beta">Beta</span></h2>'
+                  '<p>Lets Suricata see inside the HTTPS of chosen devices, through a proxy that rebuilds the traffic as plain HTTP for it. Off by default.</p>'
+                  + switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + warning
+                  + '<div class="when-on">'
+                  f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
+                  f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}</div></section>')
     rows = "".join(
-        f'<tr><td>{esc(str(e.get("device", "")))}</td><td>{esc(str(e.get("name", "")))}</td><td>{esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</td>'
-        f'<td class="actions-cell"><button class="quiet" formaction="/tls/bypass/remove" name="entry" value="{esc(str(e.get("device", "")) + " " + str(e.get("name", "")), quote=True)}">Remove</button></td></tr>'
+        f'<li><span class="what"><b>{esc(str(e.get("device", "")))}</b> {esc(str(e.get("name", "")))}</span>'
+        f'<span class="muted">until {esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</span>'
+        f'<button class="quiet" formaction="/tls/bypass/remove" name="entry" value="{esc(str(e.get("device", "")) + " " + str(e.get("name", "")), quote=True)}">Remove</button></li>'
         for e in stats.get("auto_bypass", []) if isinstance(e, dict))
-    auto = table(["Device", "Name", "Until", ""], [], "Nothing was skipped automatically.") if not rows else \
-        f'<table><thead><tr><th>Device</th><th>Name</th><th>Until</th><th></th></tr></thead><tbody>{rows}</tbody></table>'
+    auto = f'<ul class="skips">{rows}</ul>' if rows else '<p class="hint">Nothing was skipped automatically.</p>'
+    exceptions = ('<section class="card when-on"><h2>Exceptions</h2>'
+                  + switch("tls_bank_list", "Skip the bank list", s["tls_bank_list"])
+                  + '<p class="hint under">The proxy downloads a list of bank domains from the Université Toulouse Capitole and skips them. It covers many banks but not all, '
+                  'and it is not shown in the field below, so add yours there if it is missing. ' + bank_list_status(stats) + '</p>'
+                  f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" class="tall" spellcheck="false" rows="10">{esc(chr(10).join(bypass_names))}</textarea>{bypass_flag}'
+                  f'<span class="hint">{bypass_hint}</span></label>'
+                  '<h3>Skipped automatically</h3><p class="hint">When a device refuses the Mikrokat certificate for a name twice within 10 minutes, the proxy lets that device and name through untouched for 24 hours.</p>'
+                  f'{auto}</section>')
+    log = ('<section class="card when-on"><h2>Connection log</h2><div class="logrow">'
+           + switch("tls_log", "Keep a log of connections", s["tls_log"])
+           + '<button class="ghost" formaction="/tls/log/delete" onclick="return confirm(\'Delete the connection log? Both log files are removed and the Connections page starts empty. This cannot be undone.\')">Delete the log</button>'
+           '<a href="/connections">Open the Connections page</a></div>'
+           '<p class="hint">This log shows which sites each listed device visited, so the consent note above applies. It holds no URLs or content. '
+           'Turning it off stops new lines and keeps what is there.</p></section>')
+    advanced = ('<details class="card advanced when-on"><summary>Advanced</summary><div class="inner">'
+                + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
+                + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
+                f'<div class="field"><span>Automatic proxy configuration address</span><code class="command">{pac}</code></div></div></details>')
     relayed = stats.get("relayed") if isinstance(stats.get("relayed"), dict) else {}
     relayed_text = ", ".join(f"{esc(str(k))}: {esc(str(v))}" for k, v in sorted(relayed.items())) or "none"
     if stats:
-        age = int(time.time()) - stats["at"] if isinstance(stats.get("at"), int) else None
         last = stats.get("last_refused")
         last_at = stats.get("last_refused_at")
-        since = f", {max(int(time.time()) - last_at, 0)} seconds ago" if isinstance(last_at, int) and not isinstance(last_at, bool) and last_at > 0 else ""
-        refused_from = (f' Last refused: {esc(str(last))}{since}: add it to Devices if this is your device.' if isinstance(last, str) and last else "")
-        counters = (f'<p class="hint">Inspected: {esc(str(stats.get("inspected", 0)))}. Passed through uninspected: {relayed_text}. Refused: {esc(str(stats.get("refused", 0)))}.{refused_from} '
+        since = f" {max(int(time.time()) - last_at, 0)} seconds ago" if isinstance(last_at, int) and not isinstance(last_at, bool) and last_at > 0 else ""
+        refused_from = (f' Last refused{since}: add it to Devices if this is your device.' if isinstance(last, str) and last else "")
+        counters = (f'<p class="hint fine">Passed through uninspected: {relayed_text}.{refused_from} '
                     f'Handshake failures: {esc(str(stats.get("handshake_failures", 0)))}. Copied: {esc(str(stats.get("copied_bytes", 0)))} bytes. '
-                    f'Copies dropped: {esc(str(stats.get("copies_dropped", 0)))}.' + (f' Updated {age} seconds ago.' if age is not None else "") + '</p>')
+                    f'Copies dropped: {esc(str(stats.get("copies_dropped", 0)))}.</p>')
     else:
-        counters = '<p class="hint">No numbers from the proxy yet.</p>'
-    return (f'<section class="card"><h2>HTTPS inspection</h2><p>Lets Suricata see inside the HTTPS of chosen devices, through a proxy that rebuilds the traffic as plain HTTP for it. Off by default.</p>'
-            f'{warning}{options}</div></section>'
-            f'{own_ca_card(stats)}'
-            f'<section class="card"><h2>Skipped automatically</h2><p>When a device refuses the Mikrokat certificate for a name twice within 10 minutes, the proxy lets that device and name through untouched for 24 hours.</p>{auto}</section>'
-            f'<section class="card"><h2>Numbers</h2>{counters}</section>')
+        counters = '<p class="hint fine">No numbers from the proxy yet.</p>'
+    return ('<p class="note">HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.</p>'
+            + https_status(s, stats) + counters + inspection + exceptions + own_ca_card(stats) + log + advanced)
 
 
 def settings_page(host, notice="", error="", tab=""):
@@ -1199,7 +1282,7 @@ def settings_page(host, notice="", error="", tab=""):
                  + f'</div><script>{AI_PRESET_SCRIPT}</script></section>')
     panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "https": https_card(host, switch, field), "account": account}
     radios = "".join(f'<input type="radio" name="tab" id="tab-{k}" value="{k}"{checked(k == tab)}>' for k, _ in SETTINGS_TABS)
-    labels = "".join(f'<label for="tab-{k}">{t}</label>' for k, t in SETTINGS_TABS)
+    labels = "".join(f'<label for="tab-{k}">{t}{BETA_MARK if k in BETA_TABS else ""}</label>' for k, t in SETTINGS_TABS)
     content = "".join(f'<div class="pane" id="pane-{k}">{panes[k]}</div>' for k, _ in SETTINGS_TABS)
     body = (f'<form method="post" action="/settings" autocomplete="off">{hidden()}{radios}<div class="tabbar">{labels}</div>{content}'
             f'<div class="savebar"><button>Save changes</button></div></form>'
