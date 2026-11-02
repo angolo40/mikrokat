@@ -435,6 +435,7 @@ browser_checks() {
   wait_for 15 own_says false || fail "ca_own stayed true after Stop"
   names_fixture || fail "no page with many names"
   browser names -e NAMES_HTML=/w/names.html
+  browser guide
   rm -f "$E2E_SHOTS"/*.key "$E2E_SHOTS"/*.srl
 }
 

@@ -6,6 +6,7 @@
 //   node browser.mjs request   tabs, then switch on, create a request, sign it, upload the certificate alone
 //   node browser.mjs pair      the older upload of certificate and key together, then Stop using my CA
 //   node browser.mjs connections   the Connections page after real traffic: bars, tiles, tables, filters, dark and light
+//   node browser.mjs guide     click every Settings tab: its pane and only its guide block show, with no reload; the AI presets
 //   node browser.mjs names     the Known devices list of a rendered page with 38 names (NAMES_HTML)
 //
 // APP, MK_PASSWORD and OUT (where the downloads and the screenshots go) come from the environment.
@@ -313,8 +314,80 @@ async function connections(page) {
   await shot(page, 'connections-phone');
 }
 
+
+// A tab click must change the guide next to the form with no reload, and a preset must fill the two fields and leave the key.
+async function guide(page) {
+  await signIn(page);
+  await page.goto(`${APP}/settings?tab=protection`);
+  await page.evaluate(() => { window.__sameDocument = 'yes'; });
+
+  step('clicking a tab shows its pane and only its guide block, with no reload');
+  for (const tab of TABS) {
+    await page.click(`.tabbar label[for=tab-${tab}]`);
+    await shown(page.locator(`#pane-${tab}`), `the ${tab} pane`);
+    await shown(page.locator(`.guide-block.guide-${tab}`), `the ${tab} guide block`);
+    await shown(page.locator(`.guide-block.guide-${tab} h2`), `the first heading of the ${tab} guide`);
+    for (const other of TABS.filter((t) => t !== tab)) {
+      await hidden(page.locator(`#pane-${other}`), `the ${other} pane on the ${tab} tab`);
+      await hidden(page.locator(`.guide-block.guide-${other}`), `the ${other} guide block on the ${tab} tab`);
+    }
+    const box = await page.locator(`.guide-block.guide-${tab}`).boundingBox();
+    if (!box || box.width < 200 || box.height < 60) fail(`the ${tab} guide is ${JSON.stringify(box)}`);
+    const side = await page.evaluate((t) => document.querySelector(`.guide-block.guide-${t}`).getBoundingClientRect().left > document.querySelector(`#pane-${t}`).getBoundingClientRect().right - 1, tab);
+    if (!side) fail(`the ${tab} guide is not in the right column`);
+    if ((await page.evaluate(() => window.__sameDocument)) !== 'yes') fail(`clicking ${tab} reloaded the page`);
+    await shot(page, `guide-${tab}`);
+  }
+
+  step('the guide follows the form on a phone');
+  await page.setViewportSize({ width: 390, height: 800 });
+  for (const tab of ['router', 'ai']) {
+    await page.click(`.tabbar label[for=tab-${tab}]`);
+    await shown(page.locator(`.guide-block.guide-${tab}`), `the ${tab} guide block on a phone`);
+    const order = await page.evaluate((t) => document.querySelector(`.guide-block.guide-${t}`).getBoundingClientRect().top >= document.querySelector(`#pane-${t}`).getBoundingClientRect().bottom - 1, tab);
+    if (!order) fail(`on a phone the ${tab} guide is not below the form`);
+    if (await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) fail('the page scrolls sideways on a phone');
+  }
+  await shot(page, 'guide-phone');
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  step('a preset fills the address and the model and never touches the key');
+  await page.goto(`${APP}/settings?tab=ai`);
+  await shown(page.locator('#pane-ai'), 'the AI tab');
+  const toggle = page.locator('label.switch:has(input[name=ai_enabled])');
+  if (!(await page.locator('input[name=ai_enabled]').isChecked())) await toggle.click();
+  const select = page.locator('#ai-preset');
+  await shown(select, 'the Preset menu');
+  const options = await select.locator('option').allTextContents();
+  const wanted = ['Ollama', 'LM Studio', 'OpenAI', 'Google Gemini', 'Anthropic', 'OpenRouter', 'Custom'];
+  if (JSON.stringify(options) !== JSON.stringify(wanted)) fail(`the presets are ${JSON.stringify(options)}`);
+  const key = page.locator('input[name=ai_key]');
+  await key.fill('typed-key-not-saved');
+  const url = page.locator('input[name=ai_url]'), model = page.locator('input[name=ai_model]');
+  const expected = {
+    ollama: ['http://host:11434/v1', 'llama3.2'], lmstudio: ['http://host:1234/v1', ''], openai: ['https://api.openai.com/v1', 'gpt-5.6-luna'],
+    gemini: ['https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-3.1-flash-lite'], anthropic: ['https://api.anthropic.com/v1', 'claude-haiku-5-5'],
+    openrouter: ['https://openrouter.ai/api/v1', ''],
+  };
+  for (const [name, [address, suggested]] of Object.entries(expected)) {
+    await select.selectOption(name);
+    if ((await url.inputValue()) !== address) fail(`${name}: the address is ${await url.inputValue()}`);
+    if ((await model.inputValue()) !== suggested) fail(`${name}: the model is ${await model.inputValue()}`);
+    if ((await key.inputValue()) !== 'typed-key-not-saved') fail(`${name}: the key field changed`);
+    await shown(page.locator(`.preset-hint[data-preset=${name}]`), `the ${name} hint`);
+    if ((await page.locator('.preset-hint:visible').count()) !== 1) fail(`${name}: more than one hint is visible`);
+  }
+  await url.fill('http://192.0.2.50:8000/v1');
+  await model.fill('mine');
+  await select.selectOption('custom');
+  if ((await url.inputValue()) !== 'http://192.0.2.50:8000/v1' || (await model.inputValue()) !== 'mine') fail('Custom changed the fields');
+  await select.selectOption('anthropic');
+  await shot(page, 'ai-presets');
+  await shown(page.locator('button:has-text("Test the model")'), 'the Test button');
+}
+
 const phase = process.argv[2];
-const phases = { request, pair, names, connections };
+const phases = { request, pair, names, connections, guide };
 if (!phases[phase]) { console.error(`usage: browser.mjs ${Object.keys(phases).join('|')}`); process.exit(2); }
 const browser = await chromium.launch();
 let code = 0;

@@ -86,7 +86,7 @@ grep WEB_PASSWORD .env
 
 The first run takes a few minutes: it builds three images and downloads the others and the rules. The last line shows your password.
 
-Open `http://<host>:8088` and sign in as `admin`. The Settings page has a setup guide next to the form, and you can change the password there.
+Open `http://<host>:8088` and sign in as `admin`. The Settings page has a setup guide next to the form that follows the open tab, and you can change the password there.
 
 To check the path without touching the router (needs `python3`):
 
@@ -247,7 +247,7 @@ The file is rotated at 5 MiB to `connections.jsonl.1`, so the log holds at most 
 
 It only shows traffic through the proxy, from the devices on your list. It says nothing about the rest of the network, and nothing about what a program does inside a connection it passed untouched.
 
-The log shows which sites each listed device visited, so the consent note above applies to it too. **Keep a log of connections** on the HTTPS inspection tab turns it off (on by default): the proxy then writes nothing, the page empties as the 24 hours pass, and the existing file stays until you delete it.
+The log shows which sites each listed device visited, so the consent note above applies to it too. **Keep a log of connections** on the HTTPS inspection tab turns it off (on by default): the proxy then writes nothing, the page empties as the 24 hours pass, and the existing file stays until you press **Delete the log**, which removes both files and empties the page's statistics.
 
 ### Limits
 
@@ -284,7 +284,7 @@ On the Account tab of Settings you can add any OpenID Connect provider. Create a
 
 ## Explain
 
-On the AI tab of Settings, enter the address of any OpenAI-compatible API, such as `http://host:11434/v1` for Ollama, and a model name. An Explain button then appears next to rules. Mikrokat sends only the rule text, its severity and how many alerts it caused, never addresses or traffic, and it keeps each answer so it asks only once.
+On the AI tab of Settings, pick a preset (Ollama, LM Studio, OpenAI, Google Gemini, Anthropic, OpenRouter or Custom) to fill in the address and a suggested model, or enter the address of any OpenAI-compatible API and a model name. Model names change, so treat the suggestion as a starting point. The preset is not stored, and it never touches the API key. **Test the model** saves the form, sends one short request about a sample rule and shows the time and the first line of the answer. An Explain button then appears next to rules. Mikrokat sends only the rule text, its severity and how many alerts it caused, never addresses or traffic, and it keeps each answer so it asks only once.
 
 ## Security notes
 
