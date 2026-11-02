@@ -18,6 +18,8 @@ BLOCKS_FILE = os.path.join(DATA_DIR, "blocks.json")
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
 DATABASE = os.path.join(DATA_DIR, "stats.db")
 TLS_DIR = os.environ.get("TLS_DIR", "/var/lib/mikrokat-tls")
+# HTTPS inspection is a compose profile. The tlsproxy container only exists when COMPOSE_PROFILES holds "https".
+tls_available = "https" in [name.strip() for name in os.environ.get("COMPOSE_PROFILES", "").split(",")]
 TLS_PORTS_TAKEN = (8088, 5636, 37008, 8443)
 STATS_DAYS = 30
 
@@ -541,36 +543,36 @@ def save_settings(form):
         return "The traffic alarm goes from 1 to 1440 minutes."
     if not 0 <= dedupe <= 86400 or not 1 <= retention <= 90:
         return "Repeat time goes from 0 to 86400 seconds, log days from 1 to 90."
-    tls = bool(form.get("tls_enabled"))
-    tls_devices = []
-    for line in form.get("tls_devices", "").splitlines():
-        if line.strip():
-            try:
-                address = str(ipaddress.ip_address(line.strip()))
-            except ValueError:
-                return f"Not a valid device address: {line.strip()[:60]}"
-            if address not in tls_devices:
-                tls_devices.append(address)
-    if len(tls_devices) > 64:
-        return "HTTPS inspection takes at most 64 devices."
-    tls_bypass = []
-    for line in form.get("tls_bypass", "").splitlines():
-        name = line.strip().lower()
-        if name:
-            if not re.fullmatch(r"(\*\.)?[a-z0-9._-]{1,253}", name):
-                return f"Not a valid name to skip: {line.strip()[:60]}. Use example.com or *.example.com."
-            if name not in tls_bypass:
-                tls_bypass.append(name)
-    if len(tls_bypass) > 500:
-        return "HTTPS inspection skips at most 500 names."
-    try:
-        tls_port = int(form.get("tls_socks_port") or 1080)
-    except ValueError:
-        return "The SOCKS port must be a number."
-    if not 1024 <= tls_port <= 65535 or tls_port in TLS_PORTS_TAKEN:
-        return "The SOCKS port goes from 1024 to 65535, and not 8088, 5636, 37008 or 8443."
-    if tls and not tls_devices:
-        return "HTTPS inspection needs at least one device."
+    tls = tls_available and bool(form.get("tls_enabled"))
+    tls_devices, tls_bypass, tls_port = [], [], 1080
+    if tls_available:
+        for line in form.get("tls_devices", "").splitlines():
+            if line.strip():
+                try:
+                    address = str(ipaddress.ip_address(line.strip()))
+                except ValueError:
+                    return f"Not a valid device address: {line.strip()[:60]}"
+                if address not in tls_devices:
+                    tls_devices.append(address)
+        if len(tls_devices) > 64:
+            return "HTTPS inspection takes at most 64 devices."
+        for line in form.get("tls_bypass", "").splitlines():
+            name = line.strip().lower()
+            if name:
+                if not re.fullmatch(r"(\*\.)?[a-z0-9._-]{1,253}", name):
+                    return f"Not a valid name to skip: {line.strip()[:60]}. Use example.com or *.example.com."
+                if name not in tls_bypass:
+                    tls_bypass.append(name)
+        if len(tls_bypass) > 500:
+            return "HTTPS inspection skips at most 500 names."
+        try:
+            tls_port = int(form.get("tls_socks_port") or 1080)
+        except ValueError:
+            return "The SOCKS port must be a number."
+        if not 1024 <= tls_port <= 65535 or tls_port in TLS_PORTS_TAKEN:
+            return "The SOCKS port goes from 1024 to 65535, and not 8088, 5636, 37008 or 8443."
+        if tls and not tls_devices:
+            return "HTTPS inspection needs at least one device."
     with lock:
         settings.update(mode=mode, severities=severities, ignore_sids=sids, dedupe_seconds=dedupe, retention_days=retention,
                         block_timeout=timeout, block_ipv6=bool(form.get("block_ipv6")), telegram_proxy=proxy_value, router_host=host, router_user=user, router_password=password, router_port=port,
@@ -586,11 +588,12 @@ def save_settings(form):
                         ai_model=ai_model, ai_key=form.get("ai_key", "") or settings["ai_key"], ai_language=form.get("ai_language", "").strip()[:30] or "English")
         settings.update(oidc_enabled=oidc, oidc_issuer=oidc_issuer, oidc_client_id=oidc_client, oidc_client_secret=oidc_secret, oidc_group=oidc_group,
                         oidc_label=form.get("oidc_label", "").strip()[:30] or "SSO", oidc_scopes=form.get("oidc_scopes", "").strip() or "openid profile email")
-        settings.update(tls_log=bool(form.get("tls_log")), tls_bank_list=bool(form.get("tls_bank_list")))
-        settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices)
-        if "tls_bypass" in form:
-            # The field holds the whole list, defaults included, unless the page could not read them.
-            settings.update(tls_bypass=tls_bypass, tls_bypass_saved=settings["tls_bypass_saved"] or not form.get("tls_bypass_partial"))
+        if tls_available:  # without the profile the tab is not on the page, and the saved values stay as they are
+            settings.update(tls_log=bool(form.get("tls_log")), tls_bank_list=bool(form.get("tls_bank_list")))
+            settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices)
+            if "tls_bypass" in form:
+                # The field holds the whole list, defaults included, unless the page could not read them.
+                settings.update(tls_bypass=tls_bypass, tls_bypass_saved=settings["tls_bypass_saved"] or not form.get("tls_bypass_partial"))
         if new_password:
             settings["password_hash"] = hash_password(new_password)
         write_json(SETTINGS_FILE, settings)

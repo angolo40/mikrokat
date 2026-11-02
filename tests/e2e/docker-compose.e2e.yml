@@ -1,5 +1,9 @@
-# Added by tests/e2e/run.sh only: the proxy also trusts the private CA of the test server.
+# Added by tests/e2e/run.sh only: it turns the HTTPS inspection profile on for the app, and the proxy also trusts the private CA of the test server.
 services:
+  # The app reads the profile from its environment, and .env of the host may not hold it.
+  mikrokat:
+    environment:
+      COMPOSE_PROFILES: https
   tlsproxy:
     environment:
       SSL_CERT_FILE: /e2e/test-ca.pem

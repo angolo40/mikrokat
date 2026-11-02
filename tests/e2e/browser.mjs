@@ -7,6 +7,7 @@
 //   node browser.mjs pair      the older upload of certificate and key together, then Stop using my CA
 //   node browser.mjs connections   the Connections page after real traffic: bars, tiles, tables, filters, dark and light
 //   node browser.mjs guide     click every Settings tab: its pane and only its guide block show, with no reload; the AI presets
+//   node browser.mjs off      the stack without the https profile: no HTTPS inspection tab or guide block, no Connections item, a note on /connections
 //   node browser.mjs names     the Known devices list of a rendered page with 38 names (NAMES_HTML)
 //
 // APP, MK_PASSWORD and OUT (where the downloads and the screenshots go) come from the environment.
@@ -517,8 +518,31 @@ async function guide(page) {
   await shown(page.locator('button:has-text("Test the model")'), 'the Test button');
 }
 
+async function off(page) {
+  await signIn(page);
+  step('no Connections item and no tile on Overview');
+  await page.goto(`${APP}/`);
+  if ((await page.locator('nav a:has-text("Connections")').count()) !== 0) fail('the menu has a Connections item');
+  if ((await page.locator('a.tile:has-text("Decrypted")').count()) !== 0) fail('Overview has the Decrypted tile');
+  step('no HTTPS inspection tab, pane or guide block');
+  await page.goto(`${APP}/settings`);
+  await shown(page.locator('.tabbar label[for=tab-protection]'), 'the Protection tab');
+  const labels = await page.locator('.tabbar label').allTextContents();
+  if (labels.some((t) => t.includes('HTTPS'))) fail(`the tabs are ${JSON.stringify(labels)}`);
+  for (const selector of ['#pane-https', '.guide-block.guide-https', 'input[name=tls_enabled]']) {
+    if ((await page.locator(selector).count()) !== 0) fail(`${selector} is on the page`);
+  }
+  await page.goto(`${APP}/settings?tab=https`);
+  await shown(page.locator('#pane-protection'), 'the first tab, when the HTTPS one is asked for');
+  await shot(page, 'off-settings');
+  step('/connections says how to turn it on');
+  await page.goto(`${APP}/connections`);
+  await shown(page.locator('text=COMPOSE_PROFILES=https'), 'the note on /connections');
+  await shot(page, 'off-connections');
+}
+
 const phase = process.argv[2];
-const phases = { request, pair, names, connections, guide };
+const phases = { request, pair, names, connections, guide, off };
 if (!phases[phase]) { console.error(`usage: browser.mjs ${Object.keys(phases).join('|')}`); process.exit(2); }
 const browser = await chromium.launch();
 let code = 0;

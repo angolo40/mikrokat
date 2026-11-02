@@ -19,7 +19,7 @@ TLS_CA_WARNING_DAYS = 30
 
 def tls_problem():
     """The proxy fails open, so when it is on but silent, or its port is closed, say so."""
-    if not store.settings["tls_enabled"]:
+    if not (store.tls_available and store.settings["tls_enabled"]):
         return None
     status = store.tls_status()
     if not store.tls_running(status):
@@ -32,7 +32,7 @@ def tls_problem():
 
 def ca_problem():
     """Devices stop being inspected when the CA runs out, so warn while there is time to replace it."""
-    if not store.settings["tls_enabled"]:
+    if not (store.tls_available and store.settings["tls_enabled"]):
         return None
     status = store.tls_status()
     expires = status.get("ca_expires")

@@ -25,6 +25,8 @@ FETCHES=200
 SUSTAINED=$((2**30))
 SETTLE=14 # dump-counters lagged by 10.6 seconds at most, and stats.json is written every 10
 COMPOSE=(docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml)
+# HTTPS inspection is a compose profile. The suite turns it on for itself, here and, through the override file, for the app.
+export COMPOSE_PROFILES=https
 
 export E2E_WORK=
 E2E_SHOTS=${E2E_SHOTS:-}
@@ -744,7 +746,14 @@ finish() {
   feature remove
   drop_own_ca
   # Without the override, so the proxy trusts the public roots again and forgets the automatic bypass.
-  docker compose up -d --force-recreate --no-deps tlsproxy </dev/null >/dev/null 2>&1
+  # As the owner has it: the profile from .env decides whether the proxy exists, and the app drops the test's variable.
+  unset COMPOSE_PROFILES
+  if grep -qE '^COMPOSE_PROFILES=.*\bhttps\b' .env 2>/dev/null; then
+    docker compose up -d --force-recreate --no-deps tlsproxy </dev/null >/dev/null 2>&1
+  else
+    docker compose --profile https rm -sf tlsproxy </dev/null >/dev/null 2>&1
+  fi
+  docker compose up -d --force-recreate --no-deps mikrokat </dev/null >/dev/null 2>&1
   wait_for 15 incoming_empty || echo "warning: data/tls/incoming is not empty"
   apply_rules || echo "warning: the rules could not be applied, run tools/update-rules.sh"
   [ -z "$E2E_WORK" ] || rm -rf "$E2E_WORK"
@@ -761,7 +770,7 @@ setup() {
   E2E_WORK=$(mktemp -d)
   # This suite runs again after every review, so a PASS must be for the code in this folder.
   docker compose build tzsp mikrokat tlsproxy </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "the build failed: $(tail -3 "$E2E_WORK/build.log")"
-  docker compose up -d --no-deps tzsp mikrokat </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start: $(tail -3 "$E2E_WORK/build.log")"
+  "${COMPOSE[@]}" up -d --no-deps tzsp mikrokat </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start: $(tail -3 "$E2E_WORK/build.log")"
 
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$TEST_CA" \
     -keyout "$E2E_WORK/test-ca.key" -out "$E2E_WORK/test-ca.pem" 2>/dev/null || fail "no test CA"
@@ -804,6 +813,38 @@ EOF
   EVE_MARK=$(cat data/logs/eve-*.json 2>/dev/null | wc -c)
 }
 
+# A clean install has no HTTPS inspection: without the profile the stack is five containers, and the proxy, its port, its tab and its routes are not there.
+profile_off_check() {
+  check "HTTPS inspection off without the profile"
+  local names
+  COMPOSE_PROFILES= docker compose --profile https rm -sf tlsproxy </dev/null >/dev/null 2>&1
+  COMPOSE_PROFILES= docker compose up -d --force-recreate --no-deps mikrokat </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start without the profile: $(tail -3 "$E2E_WORK/build.log")"
+  COMPOSE_PROFILES= docker compose up -d </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start the stack without the profile: $(tail -3 "$E2E_WORK/build.log")"
+  wait_for 60 app_up || fail "the app did not answer without the profile"
+  names=$(docker ps --filter name=mikrokat- --format '{{.Names}}' </dev/null | sort | tr '\n' ' ')
+  [ "$(echo "$names" | wc -w)" = 5 ] || fail "expected five containers, got: $names"
+  case "$names" in *tlsproxy*) fail "the proxy is running without the profile: $names" ;; esac
+  port_closed || fail "port 1080 is open without the profile"
+  sign_in
+  local settings
+  settings=$(curl -s -b "$E2E_WORK/cookies" "$APP/settings")
+  case "$settings" in *'id="pane-https"'* | *'id="tab-https"'*) fail "the HTTPS inspection tab is on the Settings page" ;; esac
+  case "$settings" in *'id="pane-account"'*) ;; *) fail "the Settings page did not load" ;; esac
+  curl -s -b "$E2E_WORK/cookies" "$APP/connections" | grep -q "COMPOSE_PROFILES=https" || fail "/connections does not say how to enable it"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -b "$E2E_WORK/cookies" "$APP/tls/ca.pem")" = 404 ] || fail "/tls/ca.pem is not a 404"
+  curl -s "$APP/tls.pac" | grep -q 'return "DIRECT"' || fail "/tls.pac does not answer direct"
+  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q 'href="/connections"' && fail "the Overview links to Connections"
+  echo "five containers, no proxy, no tab"
+  if have_browser; then
+    mkdir -p "$E2E_WORK/pw"
+    MK_PASSWORD=$(sed -n 's/^WEB_PASSWORD=//p' .env | tr -d '\n')
+    export MK_PASSWORD APP
+    browser off
+  fi
+  "${COMPOSE[@]}" up -d --force-recreate --no-deps mikrokat tlsproxy </dev/null >"$E2E_WORK/build.log" 2>&1 || fail "cannot start again with the profile: $(tail -3 "$E2E_WORK/build.log")"
+  wait_for 60 app_up || fail "the app did not come back with the profile"
+}
+
 trap 'fail interrupted' INT TERM
 trap finish EXIT
 setup
@@ -812,6 +853,7 @@ if [ "${1:-}" = measure ]; then
   RESULT="Measured"
 else
   [ -n "$E2E_SHOTS" ] || E2E_SHOTS=$E2E_WORK/shots
+  profile_off_check
   # With the feature still off, because the browser switches it on through the page.
   browser_checks
   feature on

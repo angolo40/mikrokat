@@ -40,6 +40,8 @@ def full_form(**changes):
 class Base(unittest.TestCase):
     def setUp(self):
         self.saved = copy.deepcopy(store.settings)
+        self.saved_available = store.tls_available
+        store.tls_available = True
         self.dir = tempfile.TemporaryDirectory()
         self.old = (store.DATA_DIR, store.SETTINGS_FILE, store.TLS_DIR)
         store.DATA_DIR = self.dir.name
@@ -55,6 +57,7 @@ class Base(unittest.TestCase):
     def tearDown(self):
         store.settings.clear()
         store.settings.update(self.saved)
+        store.tls_available = self.saved_available
         store.DATA_DIR, store.SETTINGS_FILE, store.TLS_DIR = self.old
         self.dir.cleanup()
 

@@ -101,6 +101,11 @@ def ai_preset_for(url):
 SETTINGS_TABS = (("protection", "Protection"), ("notifications", "Notifications"), ("router", "Router"), ("data", "Data"), ("ai", "AI"), ("https", "HTTPS inspection"), ("account", "Account"))
 
 
+def settings_tabs():
+    """The tabs on the page. HTTPS inspection is a compose profile: without it the tab and its guide do not exist."""
+    return tuple(t for t in SETTINGS_TABS if t[0] != "https" or store.tls_available)
+
+
 BETA_TABS = ("https",)
 BETA_MARK = ' <span class="badge beta">Beta</span>'
 
@@ -510,7 +515,7 @@ def button(path, fields, label, back=""):
 def layout(active, title, body, host, notice="", error=""):
     events = events_base(host)
     links = [("/", "Overview"), ("/live", "Live"), ("/blocked", "Blocked"), ("/rules", "Rules"), ("/allowlist", "Allowlist"), ("/settings", "Settings")]
-    if store.settings["tls_enabled"]:
+    if store.tls_available and store.settings["tls_enabled"]:
         links.insert(2, ("/connections", "Connections"))
     nav = "".join(f'<a href="{p}"{" class=on" if p == active else ""}>{n}</a>' for p, n in links)
     nav += f'<a href="{esc(events, quote=True)}" target="_blank" rel="noopener">Events ↗</a>'
@@ -554,7 +559,7 @@ def tile(value, label):
 
 def overview_tile():
     """The tile that opens the Connections page, only while HTTPS inspection is on."""
-    if not store.settings["tls_enabled"]:
+    if not (store.tls_available and store.settings["tls_enabled"]):
         return ""
     count = store.conn_totals(1)["inspected"]
     return (f'<a class="tile" href="/connections" title="Connections inspected in the last 24 hours. Open the Connections page.">'
@@ -646,6 +651,11 @@ def millis(value):
 
 def connections_page(host, notice="", error="", query=None):
     """What went through the HTTPS proxy and what it did. Names come from client traffic, so everything is escaped."""
+    if not store.tls_available:
+        how = ('<p>HTTPS inspection is a beta feature and is not part of this install.</p>'
+               '<p class="muted">To enable it, set <code>COMPOSE_PROFILES=https</code> in the <code>.env</code> file of this install, then run '
+               '<code>docker compose up -d</code>. This page and a Settings tab for it then appear.</p>')
+        return layout("/connections", "Connections", panel("HTTPS inspection is not enabled", how), host, notice, error)
     query = query or {}
     device = query.get("device", [""])[0][:64]
     site = query.get("site", [""])[0][:100]
@@ -950,7 +960,7 @@ def pac_text(host):
     """
     s = store.settings
     found = re.fullmatch(r"(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253})(:\d{1,5})?", host.strip())
-    if not (found and s["tls_enabled"] and s["tls_socks"]):
+    if not (found and store.tls_available and s["tls_enabled"] and s["tls_socks"]):
         return 'function FindProxyForURL(url, host) {\n  return "DIRECT";\n}\n'
     return ('function FindProxyForURL(url, host) {\n'
             '  if (url.substring(0, 6) != "https:" && url.substring(0, 4) != "wss:") return "DIRECT";\n'
@@ -1173,7 +1183,7 @@ def https_card(host, switch, field):
 
 def settings_page(host, notice="", error="", tab=""):
     s = store.settings
-    tab = tab if tab in dict(SETTINGS_TABS) else "protection"
+    tab = tab if tab in dict(settings_tabs()) else "protection"
 
     def checked(flag):
         return " checked" if flag else ""
@@ -1280,10 +1290,13 @@ def settings_page(host, notice="", error="", tab=""):
                  + field("Model", "ai_model", s["ai_model"], hint="A suggestion: model names change") + secret("API key", "ai_key", s["ai_key"], "Leave empty for a local model.")
                  + field("Answer language", "ai_language", s["ai_language"]) + '</div>' + test("/test/explain", "Test the model")
                  + f'</div><script>{AI_PRESET_SCRIPT}</script></section>')
-    panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "https": https_card(host, switch, field), "account": account}
-    radios = "".join(f'<input type="radio" name="tab" id="tab-{k}" value="{k}"{checked(k == tab)}>' for k, _ in SETTINGS_TABS)
-    labels = "".join(f'<label for="tab-{k}">{t}{BETA_MARK if k in BETA_TABS else ""}</label>' for k, t in SETTINGS_TABS)
-    content = "".join(f'<div class="pane" id="pane-{k}">{panes[k]}</div>' for k, _ in SETTINGS_TABS)
+    panes = {"protection": protection, "notifications": notifications, "router": router, "data": data, "ai": assistant, "account": account}
+    if store.tls_available:
+        panes["https"] = https_card(host, switch, field)
+    tabs = settings_tabs()
+    radios = "".join(f'<input type="radio" name="tab" id="tab-{k}" value="{k}"{checked(k == tab)}>' for k, _ in tabs)
+    labels = "".join(f'<label for="tab-{k}">{t}{BETA_MARK if k in BETA_TABS else ""}</label>' for k, t in tabs)
+    content = "".join(f'<div class="pane" id="pane-{k}">{panes[k]}</div>' for k, _ in tabs)
     body = (f'<form method="post" action="/settings" autocomplete="off">{hidden()}{radios}<div class="tabbar">{labels}</div>{content}'
             f'<div class="savebar"><button>Save changes</button></div></form>'
             # Its fields sit on the tab, inside the form above, and join this one through form="own-ca".
@@ -1292,7 +1305,7 @@ def settings_page(host, notice="", error="", tab=""):
             f'<form id="own-ca-request" method="post" action="/tls/own-ca/request">{hidden()}</form>'
             f'<form id="own-ca-cancel" method="post" action="/tls/own-ca/request/cancel">{hidden()}</form>')
     ip = esc(host.split(":")[0])
-    blocks = "".join(f'<div class="guide-block guide-{k}">{GUIDE[k].format(ip=ip)}</div>' for k, _ in SETTINGS_TABS)
+    blocks = "".join(f'<div class="guide-block guide-{k}">{GUIDE[k].format(ip=ip)}</div>' for k, _ in tabs)
     guide = f'<aside class="guide">{blocks}</aside>'
     return layout("/settings", "Settings", f'<div class="with-guide"><div>{body}</div>{guide}</div>', host, notice, error)
 
@@ -1565,6 +1578,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if url.path.startswith("/tls/") and not store.tls_available:
+            self.send_error(404)
+            return
         if not self.authorized():
             return
         if url.path == "/tls/ca.pem":
@@ -1681,6 +1697,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if self.path.startswith("/tls/") and not store.tls_available:
+            self.send_error(404)
+            return
         if self.path == "/tls/own-ca":
             self.own_ca_upload()
             return

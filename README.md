@@ -16,7 +16,7 @@ It is the lightweight successor of [mikrocata2selks](https://github.com/angolo40
 - **Health alarms:** warns you if traffic stops arriving, the rules get old, the disk fills up or the router stops answering.
 - **Automatic rule updates:** daily or weekly, without stopping Suricata.
 - **Live page:** alerts and actions as they happen, with repeats grouped.
-- **HTTPS inspection (beta):** optional and off by default. Suricata can read the HTTPS of the devices you choose. HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.
+- **HTTPS inspection (beta):** optional, and not part of a clean install: you turn it on with one line in `.env`. Suricata can read the HTTPS of the devices you choose. HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.
 - **Blocking:** automatic or by hand, through a MikroTik address list. Blocks are put back after a router restart, and repeat offenders can be blocked for longer.
 - **Safe by default:** starts in Monitor mode, which only reports. Private networks and major DNS servers are protected from blocks.
 - **Notifications:** Telegram, email and webhooks for Slack, Discord, Microsoft Teams or your own service, plus an optional daily summary.
@@ -45,7 +45,7 @@ The router copies traffic to Mikrokat with TZSP. Mikrokat only sees what the rou
 | `mikrokat-app` | Web pages, alert handling, blocking, notifications |
 | `mikrokat-evebox` | Event browser |
 | `mikrokat-rules` | Applies rule updates on request |
-| `mikrokat-tlsproxy` | Optional HTTPS inspection. Listens on nothing while it is off |
+| `mikrokat-tlsproxy` | Optional HTTPS inspection. It exists only with `COMPOSE_PROFILES=https` in `.env` |
 
 ## Requirements
 
@@ -61,17 +61,57 @@ You also need:
 - `/dev/net/tun` available to Docker.
 - A MikroTik router with RouterOS 7. Blocking needs the API service, on port 8729 or 8728.
 
-**Proxmox LXC:** works unprivileged. Turn on `nesting` and `keyctl`, and pass `/dev/net/tun`. On a VM, set the CPU type to `host`.
+**Proxmox LXC:** works unprivileged, and `tools/proxmox-lxc.sh` makes one for you (see Install). By hand, turn on `nesting` and `keyctl`, and pass `/dev/net/tun`. On a VM, set the CPU type to `host`.
 
 **Measured use:** about 600 MB of RAM and 1.1 GB of images, with 53,000 rules on a 4-core Intel N305. At about 3,000 packets per second (20 Mbps), Suricata and the TZSP receiver used about 5% of one core each. Applying rules briefly needs 500 MB more. Heavier links need more CPU, so watch **Packets dropped** on the Overview page.
 
-**HTTPS inspection:** while off, `mikrokat-tlsproxy` uses about 3 MB of RAM and opens no port. While on, on the same CPU and with both ends on that host, a 1 GiB download through it reached 2.4 to 3.2 Gbps, with the proxy using one core and 13 MB of RAM. With 100 downloads at once and its queue full it peaked at about 105 MB. The copy for Suricata is paced to about 10 MB/s: of a 1 MiB burst, 1,546 frames were sent and 1,546 arrived.
+**HTTPS inspection:** without the `https` profile there is no proxy container at all, and five containers run. While on, on the same CPU and with both ends on that host, a 1 GiB download through it reached 2.4 to 3.2 Gbps, with the proxy using one core and 13 MB of RAM. With 100 downloads at once and its queue full it peaked at about 105 MB. The copy for Suricata is paced to about 10 MB/s: of a 1 MiB burst, 1,546 frames were sent and 1,546 arrived.
 
 Disk use is capped: Suricata logs at 4 GB, the EveBox database at 4 GB, and container logs at 30 MB each.
 
 Do not run Mikrokat on the router. A container on a MikroTik device has little memory, slows routing, and puts a parser of hostile traffic on your gateway.
 
 ## Install
+
+### On Proxmox, with one command
+
+On a Proxmox VE 8.1 or newer host, as root:
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/angolo40/mikrokat/main/tools/proxmox-lxc.sh)"
+```
+
+It asks a few questions, each with a default, and then makes an unprivileged Debian 13 container with `nesting` and `keyctl` on, `/dev/net/tun` passed in and start on boot. In it installs Docker from Docker's own repository, clones the latest release of Mikrokat, writes `.env` with a generated password, downloads the rules and starts the stack. At the end it prints the address, the user and the password. It does not touch your router: the next step is the router rules under Router setup below. Read the script before you run it, it is `tools/proxmox-lxc.sh`.
+
+To skip the questions, set the answers as variables. With a variable set the script does not ask, and with no terminal it uses the defaults:
+
+| Variable | Default | |
+|---|---|---|
+| `var_ctid` | next free ID | Container ID |
+| `var_hostname` | `mikrokat` | Host name |
+| `var_cpu` | `2` | CPU cores |
+| `var_ram` | `2048` | RAM in MB |
+| `var_disk` | `16` | Disk in GB |
+| `var_storage` | first storage that takes containers | Storage for the disk |
+| `var_bridge` | `vmbr0` | Network bridge |
+| `var_ip` | `dhcp` | `dhcp`, or an address with its prefix such as `192.0.2.20/24` |
+| `var_gateway` | | Needed with a fixed `var_ip` |
+| `var_router_ip` | empty | Address of the MikroTik. Sets `ROUTER_HOST`, so TZSP is accepted only from it |
+| `var_https` | `no` | `yes` enables the HTTPS inspection beta |
+
+```sh
+var_ctid=120 var_ip=192.0.2.20/24 var_gateway=192.0.2.1 var_router_ip=192.0.2.1 bash proxmox-lxc.sh
+```
+
+The log is `/var/log/mikrokat-lxc-<ctid>.log` on the Proxmox host. It holds no password. If a step fails, the script says which and leaves the container for you to look at. It never deletes anything.
+
+To update to the latest release, keeping `.env`, `rules` and `data`:
+
+```sh
+bash proxmox-lxc.sh update <ctid>
+```
+
+### By hand, on any Docker host
 
 ```sh
 git clone https://github.com/angolo40/mikrokat.git
@@ -166,9 +206,17 @@ To keep a rule in Events but stop its notifications and blocks, use **Mute**.
 
 HTTPS inspection is in beta. It has been tested on one network, so expect rough edges.
 
+A clean install does not have it: there is no proxy container, no HTTPS inspection tab and no Connections page. To turn it on, set this in `.env` (the Proxmox script does it with `var_https=yes`) and run `docker compose up -d`:
+
+```sh
+COMPOSE_PROFILES=https
+```
+
+The proxy container is then built and started, and the tab appears in Settings. To turn it off again, empty the line and run `docker compose up -d --remove-orphans`. Your settings on the tab stay saved while it is off, but nothing is inspected, `/tls.pac` answers direct and the health alarms for the proxy stay quiet.
+
 Suricata cannot read HTTPS, so it sees little more than a name and a size. For the devices you choose, Mikrokat can read that traffic. `mikrokat-tlsproxy` connects to the real site, checks its certificate chain, name and dates, and gives the browser a certificate of its own, signed by a private CA that you trust on that device. It makes a copy of the traffic in memory and feeds it to Suricata as plain HTTP. Your rules then fire on URLs and content, and each alert shows the real device and server, with a `decrypted` badge on the Live page.
 
-It is off by default. The proxy only reads: it never changes traffic, and blocking stays on the router. A site whose certificate fails those checks is passed through untouched, so the browser shows its usual warning. If the proxy stops, or it cannot open its port, browsers using the PAC file below go direct, and a health alarm appears within about two minutes. Another alarm warns when the CA has less than 30 days left.
+Even with the profile on, nothing is inspected until you list a device and switch it on in the tab. The proxy only reads: it never changes traffic, and blocking stays on the router. A site whose certificate fails those checks is passed through untouched, so the browser shows its usual warning. If the proxy stops, or it cannot open its port, browsers using the PAC file below go direct, and a health alarm appears within about two minutes. Another alarm warns when the CA has less than 30 days left.
 
 **Inspect only your own devices, or with the consent of the person using them.** Whoever runs Mikrokat can see the URLs they open.
 
