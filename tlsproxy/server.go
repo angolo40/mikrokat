@@ -127,19 +127,23 @@ type Server struct {
 
 	local atomic.Pointer[localNets] // nil until the first list, and Apply opens no port before that
 
-	mu         sync.Mutex
-	cfg        Config
-	ln         net.Listener // nil while the port is closed
-	port       int
-	caGen      int
-	caOwn      bool                                     // the last look found own files
-	ownSeen    string                                   // the own files as loaded, "" if they could not be
-	ownNews    bool                                     // the upload state changed, tell the app at once
-	conns      map[string]map[uint64]context.CancelFunc // by device, then by connection
-	total      int                                      // connections in conns
-	nextConn   uint64
-	state      string // the last line logged by Apply
-	listFailed bool   // the current failure to list interfaces is already logged
+	mu           sync.Mutex
+	cfg          Config
+	ln           net.Listener // nil while the port is closed
+	port         int
+	caGen        int
+	caOwn        bool                                     // the last look found own files
+	ownSeen      string                                   // the own files as loaded, "" if they could not be
+	ownNews      bool                                     // the upload state changed, tell the app at once
+	reqLoaded    bool                                     // the handled counters were read from the private folder
+	reqMade      int                                      // the last request counter handled
+	reqCancelled int                                      // the last cancel counter handled
+	reqName      string                                   // the name of the pending request, "" until known
+	conns        map[string]map[uint64]context.CancelFunc // by device, then by connection
+	total        int                                      // connections in conns
+	nextConn     uint64
+	state        string // the last line logged by Apply
+	listFailed   bool   // the current failure to list interfaces is already logged
 }
 
 // NewServer returns a Server with the port closed. The first CA is made and
@@ -331,7 +335,11 @@ func (s *Server) admit(ln net.Listener, device net.IP) (context.Context, func(),
 		return nil, nil, false
 	}
 	key := device.String()
-	if !s.cfg.Allowed(device) || s.total >= maxConns || len(s.conns[key]) >= maxPerDevice {
+	if !s.cfg.Allowed(device) {
+		s.Engine.Stats.RefusedFrom(device)
+		return nil, nil, false
+	}
+	if s.total >= maxConns || len(s.conns[key]) >= maxPerDevice {
 		s.Engine.Stats.Refused()
 		return nil, nil, false
 	}

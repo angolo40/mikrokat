@@ -5,8 +5,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -14,9 +17,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -28,11 +33,26 @@ const (
 	// What state/ca.pem held before an own chain replaced it, empty if nothing.
 	savedGenerated = "generated-ca.pem"
 
+	// A request for the owner's root to sign. The key stays in private, the
+	// request is the only part of it that is served. The counters the proxy has
+	// handled are kept beside the key, so a restart does not ask again.
+	requestKeyFile  = "own-ca-request.key"
+	requestCSRFile  = "own-ca.csr"
+	requestSeenFile = "own-ca-request.seen"
+	requestNameMax  = 64
+	requestDefault  = "Mikrokat Inspection CA"
+
 	ownFileLimit  = 1 << 20 // the app takes 256 KiB, this is against anything else
 	ownLoneLimit  = 60 * time.Second
 	ownCheckName  = "own-ca-check.invalid"
 	ownRSAMaxBits = 8192 // signing with more freezes the proxy for minutes
 	ownChainMax   = 8
+)
+
+var (
+	errKeyMismatch   = errors.New("the key does not match the first certificate")
+	errNotForRequest = errors.New("This certificate was not signed for the pending request.")
+	errNoRequest     = errors.New("No request is pending. Create a request, or upload the key too.")
 )
 
 // parseOwnCA checks a certificate file and a key file and returns the CA they
@@ -49,7 +69,7 @@ func parseOwnCA(certPEM, keyPEM []byte, now time.Time) (*CA, error) {
 	first := chain[0]
 	pub, ok := key.Public().(interface{ Equal(crypto.PublicKey) bool })
 	if !ok || !pub.Equal(first.PublicKey) {
-		return nil, errors.New("the key does not match the first certificate")
+		return nil, errKeyMismatch
 	}
 	if !first.IsCA {
 		return nil, errors.New("the first certificate is not a CA")
@@ -291,6 +311,7 @@ func (s *Server) pollOwn() {
 	if err := s.finishInstall(); err != nil {
 		s.importResult(fmt.Errorf("the upload could not be installed: %w", err))
 	}
+	s.pollRequest()
 	s.removeOwn()
 	if !s.ownStored() {
 		s.restoreGenerated() // a failure is tried again, and loadCA reports it
@@ -302,6 +323,7 @@ func (s *Server) pollOwn() {
 		}
 	}
 	s.importOwn()
+	s.reportRequest()
 }
 
 // removeOwn acts on a request to stop using the own CA. The request goes last,
@@ -342,6 +364,11 @@ func (s *Server) importOwn() {
 	cert, key := filepath.Join(s.IncomingDir, ownCertFile), filepath.Join(s.IncomingDir, ownKeyFile)
 	_, certErr := os.Lstat(cert)
 	_, keyErr := os.Lstat(key)
+	if certErr == nil && keyErr != nil && errors.Is(keyErr, os.ErrNotExist) {
+		// A signed certificate for the pending key. The app writes the key of a
+		// pair first, so a certificate with no key beside it is not half a pair.
+		s.importSigned(cert)
+	}
 	if certErr == nil && keyErr == nil {
 		err := s.takeUpload(cert, key)
 		for _, path := range []string{key, cert} {
@@ -549,4 +576,184 @@ func (s *Server) readOwn() (*CA, error) {
 		}
 	}
 	return ca, nil
+}
+
+// pollRequest carries out the app's counters: a new request replaces the
+// pending one, a cancel drops it. Cancel goes last, so a key never outlives it.
+func (s *Server) pollRequest() {
+	if !s.reqLoaded {
+		s.reqMade, s.reqCancelled = readRequestSeen(s.private(requestSeenFile))
+		s.reqLoaded = true
+	}
+	cfg := s.cfg
+	if cfg.CARequest != s.reqMade && cfg.CARequest != 0 {
+		s.reqMade = cfg.CARequest
+		err := s.makeRequest(cfg.CARequestName)
+		s.saveRequestSeen()
+		s.ownNews = true
+		if err != nil {
+			s.Engine.Stats.SetImportError(fmt.Sprintf("the request could not be made: %v", err))
+			log.Printf("own CA request failed: %v", err)
+		} else {
+			s.Engine.Stats.SetImportError("")
+			log.Printf("own CA request made")
+		}
+	}
+	if cfg.CARequestCancel != s.reqCancelled && cfg.CARequestCancel != 0 {
+		s.reqCancelled = cfg.CARequestCancel
+		if err := s.dropRequest(); err != nil {
+			s.importResult(fmt.Errorf("the request could not be cancelled: %w", err))
+		} else {
+			log.Printf("own CA request cancelled")
+		}
+		s.saveRequestSeen()
+		s.ownNews = true
+	}
+}
+
+// reportRequest tells the stats whether a request is pending, and its name.
+func (s *Server) reportRequest() {
+	if _, err := os.Lstat(s.private(requestKeyFile)); err != nil {
+		s.reqName = ""
+		s.Engine.Stats.SetRequest(false, "")
+		return
+	}
+	if s.reqName == "" {
+		s.reqName = requestDefault
+		if raw, err := os.ReadFile(filepath.Join(s.StateDir, requestCSRFile)); err == nil {
+			if block, _ := pem.Decode(raw); block != nil {
+				if csr, err := x509.ParseCertificateRequest(block.Bytes); err == nil && csr.Subject.CommonName != "" {
+					s.reqName = csr.Subject.CommonName
+				}
+			}
+		}
+	}
+	s.Engine.Stats.SetRequest(true, s.reqName)
+}
+
+func readRequestSeen(path string) (made, cancelled int) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0
+	}
+	f := strings.Fields(string(raw))
+	if len(f) != 2 {
+		return 0, 0
+	}
+	made, _ = strconv.Atoi(f[0])
+	cancelled, _ = strconv.Atoi(f[1])
+	return made, cancelled
+}
+
+func (s *Server) saveRequestSeen() {
+	data := []byte(fmt.Sprintf("%d %d\n", s.reqMade, s.reqCancelled))
+	if err := prepareDirs(s.PrivateDir, s.StateDir); err == nil {
+		err = writeFileAtomic(s.private(requestSeenFile), data, 0o600)
+		if err != nil {
+			log.Printf("own CA request counters could not be saved: %v", err)
+		}
+	}
+}
+
+// requestName caps the name the app sent. The app checks it too.
+func requestName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return requestDefault
+	}
+	for utf8.RuneCountInString(name) > requestNameMax {
+		_, n := utf8.DecodeLastRuneInString(name)
+		name = name[:len(name)-n]
+	}
+	return name
+}
+
+// makeRequest writes a new key and the request for it. The key goes first and
+// the request last, each through a rename, so a request on offer always has
+// its key. An older pending pair is replaced.
+func (s *Server) makeRequest(name string) error {
+	if err := prepareDirs(s.PrivateDir, s.StateDir); err != nil {
+		return err
+	}
+	name = requestName(name)
+	key, err := ecdsaNew()
+	if err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: name},
+	}, key)
+	if err != nil {
+		return err
+	}
+	// The old request goes first: while the key is replaced it would not match.
+	if err := os.Remove(filepath.Join(s.StateDir, requestCSRFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := writeFileAtomic(s.private(requestKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(s.StateDir, requestCSRFile), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr}), 0o644); err != nil {
+		return err
+	}
+	s.reqName = name
+	return nil
+}
+
+func ecdsaNew() (*ecdsa.PrivateKey, error) {
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+}
+
+// dropRequest deletes the pending key and request. The key goes first.
+func (s *Server) dropRequest() error {
+	s.reqName = ""
+	for _, path := range []string{s.private(requestKeyFile), filepath.Join(s.StateDir, requestCSRFile)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotDir(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// importSigned takes a certificate that came without a key. It is checked as an
+// upload is, with the pending key. A refusal leaves the pending key and the CA
+// in use, and the certificate never stays in the incoming folder.
+func (s *Server) importSigned(cert string) {
+	err := s.takeSigned(cert)
+	if rerr := removeUploaded(cert); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		log.Printf("the uploaded %s could not be deleted from the incoming folder: %v", filepath.Base(cert), rerr)
+	}
+	s.importResult(err)
+}
+
+func (s *Server) takeSigned(cert string) error {
+	keyPEM, err := readOwnFile(s.private(requestKeyFile))
+	if errors.Is(err, os.ErrNotExist) || isNotDir(err) {
+		return errNoRequest
+	}
+	if err != nil {
+		return err
+	}
+	certPEM, err := readOwnFile(cert)
+	if err != nil {
+		return err
+	}
+	ca, err := parseOwnCA(certPEM, keyPEM, s.Engine.now())
+	if errors.Is(err, errKeyMismatch) {
+		return errNotForRequest
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.installOwn(chainPEM(ca), keyPEM); err != nil {
+		return err
+	}
+	if err := s.dropRequest(); err != nil {
+		log.Printf("the request could not be removed after the install: %v", err)
+	}
+	return nil
 }

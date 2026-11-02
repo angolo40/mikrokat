@@ -16,13 +16,18 @@ type AutoRemoval struct {
 
 // Config is the control file written by the app and read by the proxy.
 type Config struct {
-	Enabled      bool          `json:"enabled"`
-	Socks        bool          `json:"socks"`
-	SocksPort    int           `json:"socks_port"`
-	Devices      []string      `json:"devices"`
-	Bypass       []string      `json:"bypass"`
-	CAGeneration int           `json:"ca_generation"`
-	AutoRemove   []AutoRemoval `json:"auto_remove"`
+	Enabled      bool     `json:"enabled"`
+	Socks        bool     `json:"socks"`
+	SocksPort    int      `json:"socks_port"`
+	Devices      []string `json:"devices"`
+	Bypass       []string `json:"bypass"`
+	CAGeneration int      `json:"ca_generation"`
+	// The app raises a counter to ask for something. A request makes a key and a
+	// signing request for the owner's own root, a cancel drops them.
+	CARequest       int           `json:"ca_request"`
+	CARequestName   string        `json:"ca_request_name"`
+	CARequestCancel int           `json:"ca_request_cancel"`
+	AutoRemove      []AutoRemoval `json:"auto_remove"`
 }
 
 // LoadConfig reads the control file. A missing file means the feature is off.

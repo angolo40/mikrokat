@@ -495,8 +495,9 @@ func TestImportAtomic(t *testing.T) {
 	for _, c := range []struct {
 		lone, reason string
 	}{
+		// A lone certificate is no longer half an upload: it is judged at once, see
+		// TestCertificateWithoutARequestIsRefusedAtOnce.
 		{"own-ca.key", "only the key"},
-		{"own-ca.pem", "only the certificate"},
 	} {
 		t.Run(c.lone, func(t *testing.T) {
 			r := newOwnRig(t)
@@ -1076,4 +1077,367 @@ func TestOwnCAExpiresWithTheEarliestCertificate(t *testing.T) {
 	if got := r.stat(t)["ca_expires"]; got != float64(root.cert.NotAfter.Unix()) {
 		t.Fatalf("ca_expires %v, want the root's %d", got, root.cert.NotAfter.Unix())
 	}
+}
+
+// signRequest is what the owner does with openssl: sign the request the proxy
+// made, under the root, as a CA with the extensions the app serves.
+func signRequest(t *testing.T, csrPEM []byte, root *testCA, change ...func(*x509.Certificate)) *testCA {
+	t.Helper()
+	block, _ := pem.Decode(csrPEM)
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		t.Fatalf("not a request: %q", csrPEM)
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial, Subject: csr.Subject,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(30 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true, IsCA: true, MaxPathLen: 0, MaxPathLenZero: true,
+	}
+	for _, c := range change {
+		c(tmpl)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, root.cert, csr.PublicKey, root.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &testCA{cert: cert, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
+}
+
+const (
+	pendingKey = "own-ca-request.key"
+	pendingCSR = "own-ca.csr"
+)
+
+func (r *socksRig) ask(t *testing.T, name string) {
+	t.Helper()
+	r.cfg.CARequest++
+	r.cfg.CARequestName = name
+	r.Apply(r.cfg)
+}
+
+func (r *socksRig) csr(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(r.StateDir, pendingCSR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// uploadCert is the signed certificate alone, as the page leaves it.
+func (r *socksRig) uploadCert(t *testing.T, cert []byte) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(r.IncomingDir, "own-ca.pem"), cert, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRequestMakesKeyAndCSR(t *testing.T) {
+	r := newOwnRig(t)
+	r.ask(t, "My Inspection CA")
+	st, err := os.Stat(filepath.Join(r.PrivateDir, pendingKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %o", st.Mode().Perm())
+	}
+	block, _ := pem.Decode(r.csr(t))
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatal(err)
+	}
+	if csr.Subject.CommonName != "My Inspection CA" {
+		t.Fatalf("name %q", csr.Subject.CommonName)
+	}
+	raw, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey))
+	key, err := parseOwnKey(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub, ok := key.(*ecdsa.PrivateKey); !ok || pub.Curve != elliptic.P256() || !pub.PublicKey.Equal(csr.PublicKey) {
+		t.Fatal("the request is not for the pending ECDSA P-256 key")
+	}
+	if m := r.stat(t); m["ca_request_pending"] != true || m["ca_request_name"] != "My Inspection CA" {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestRequestNameIsCapped(t *testing.T) {
+	r := newOwnRig(t)
+	r.ask(t, strings.Repeat("x", 100))
+	block, _ := pem.Decode(r.csr(t))
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(csr.Subject.CommonName) != 64 {
+		t.Fatalf("name of %d characters", len(csr.Subject.CommonName))
+	}
+}
+
+func TestNewRequestReplacesTheOldOne(t *testing.T) {
+	r := newOwnRig(t)
+	r.ask(t, "First")
+	firstKey, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey))
+	firstCSR := r.csr(t)
+	r.Apply(r.cfg) // the same counter again changes nothing
+	if k, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey)); !bytes.Equal(k, firstKey) {
+		t.Fatal("the key changed without a new counter")
+	}
+	r.ask(t, "Second")
+	if k, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey)); bytes.Equal(k, firstKey) {
+		t.Fatal("the key was not replaced")
+	}
+	if bytes.Equal(r.csr(t), firstCSR) {
+		t.Fatal("the request was not replaced")
+	}
+	if m := r.stat(t); m["ca_request_name"] != "Second" {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestCounterZeroDoesNothing(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.Apply(Config{})
+	for _, p := range []string{filepath.Join(r.PrivateDir, pendingKey), filepath.Join(r.StateDir, pendingCSR)} {
+		if onDisk(t, p) {
+			t.Fatalf("%s exists", p)
+		}
+	}
+	if m := r.stat(t); m["ca_request_pending"] != false {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestRequestSurvivesARestart(t *testing.T) {
+	r := newOwnRig(t)
+	r.ask(t, "Kept")
+	key, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey))
+	again := NewServer(r.Engine, r.PrivateDir, r.StateDir)
+	again.IncomingDir, again.Interfaces = r.IncomingDir, r.Interfaces
+	again.Apply(r.cfg)
+	if k, _ := os.ReadFile(filepath.Join(r.PrivateDir, pendingKey)); !bytes.Equal(k, key) {
+		t.Fatal("a restart made a new key for a counter it had handled")
+	}
+	if m := r.stat(t); m["ca_request_name"] != "Kept" {
+		t.Fatalf("stats %v", m)
+	}
+	again.Apply(Config{})
+}
+
+func TestSignedChainWithThePendingKeyInstalls(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.ask(t, "Signed CA")
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	signed := signRequest(t, r.csr(t), root)
+	r.uploadCert(t, append(append([]byte{}, signed.pem...), root.pem...))
+	if !r.Apply(r.cfg) {
+		t.Fatal("the result waits for the next stats write")
+	}
+	incomingEmpty(t, r)
+	for _, p := range []string{filepath.Join(r.PrivateDir, pendingKey), filepath.Join(r.StateDir, pendingCSR)} {
+		if onDisk(t, p) {
+			t.Fatalf("%s stayed", p)
+		}
+	}
+	m := r.stat(t)
+	if m["ca_own"] != true || m["ca_subject"] != "CN=Signed CA" || m["ca_chain"] != float64(2) || m["ca_import_error"] != "" || m["ca_request_pending"] != false {
+		t.Fatalf("stats %v", m)
+	}
+	r.Apply(r.cfg)
+	state := r.visit(t, poolOf(root.cert))
+	if len(state.PeerCertificates) < 2 {
+		t.Fatalf("the server sent %d certificates", len(state.PeerCertificates))
+	}
+}
+
+func TestSignedCertificateWithoutTheRoot(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.ask(t, "Signed CA")
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	r.uploadCert(t, signRequest(t, r.csr(t), root).pem)
+	r.Apply(r.cfg)
+	r.Apply(r.cfg)
+	// A chain of one is allowed: the signed CA is then the anchor of the leaf test.
+	if m := r.stat(t); m["ca_own"] != true || m["ca_chain"] != float64(1) || m["ca_import_error"] != "" {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestCertificateForAnotherKeyIsRefused(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.ask(t, "Pending")
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	other := makeCA(t, "Other", ecKey(t, elliptic.P256()), root)
+	before := r.snapshot(t)
+	r.uploadCert(t, append(append([]byte{}, other.pem...), root.pem...))
+	if !r.Apply(r.cfg) {
+		t.Fatal("the refusal waits for the next stats write")
+	}
+	incomingEmpty(t, r)
+	if m := r.stat(t); m["ca_import_error"] != "This certificate was not signed for the pending request." || m["ca_request_pending"] != true || m["ca_own"] == true {
+		t.Fatalf("stats %v", m)
+	}
+	sameFiles(t, before, r.snapshot(t))
+	// The right certificate still works afterwards.
+	r.uploadCert(t, append(append([]byte{}, signRequest(t, r.csr(t), root).pem...), root.pem...))
+	r.Apply(r.cfg)
+	if m := r.stat(t); m["ca_own"] != true || m["ca_import_error"] != "" {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestSignedCertificateThatFailsLeavesTheActiveCA(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	active := makeCA(t, "Active CA", ecKey(t, elliptic.P256()), nil)
+	r.upload(t, active.pem, pkcs8(t, active.key))
+	r.Apply(r.cfg)
+	r.ask(t, "Pending")
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	expired := signRequest(t, r.csr(t), root, func(c *x509.Certificate) {
+		c.NotBefore, c.NotAfter = time.Now().Add(-48*time.Hour), time.Now().Add(-time.Hour)
+	})
+	before := r.snapshot(t)
+	r.uploadCert(t, append(append([]byte{}, expired.pem...), root.pem...))
+	r.Apply(r.cfg)
+	if m := r.stat(t); m["ca_subject"] != "CN=Active CA" || m["ca_import_error"] == "" || m["ca_request_pending"] != true {
+		t.Fatalf("stats %v", m)
+	}
+	sameFiles(t, before, r.snapshot(t))
+}
+
+func TestCertificateWithoutARequestIsRefusedAtOnce(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	ca := makeCA(t, "Some CA", ecKey(t, elliptic.P256()), nil)
+	before := r.snapshot(t)
+	r.uploadCert(t, ca.pem)
+	if !r.Apply(r.cfg) {
+		t.Fatal("the refusal waits for the next stats write")
+	}
+	incomingEmpty(t, r)
+	if reason := r.stat(t)["ca_import_error"]; reason != "No request is pending. Create a request, or upload the key too." {
+		t.Fatalf("reason %v", reason)
+	}
+	sameFiles(t, before, r.snapshot(t))
+}
+
+func TestLoneKeyKeepsTheSixtySecondRule(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.ask(t, "Pending")
+	ca := makeCA(t, "Some CA", ecKey(t, elliptic.P256()), nil)
+	if err := os.WriteFile(filepath.Join(r.IncomingDir, "own-ca.key"), pkcs8(t, ca.key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.Apply(r.cfg)
+	if !onDisk(t, filepath.Join(r.IncomingDir, "own-ca.key")) {
+		t.Fatal("a fresh lone key was deleted")
+	}
+	if !onDisk(t, filepath.Join(r.PrivateDir, pendingKey)) {
+		t.Fatal("the pending key went")
+	}
+}
+
+func TestCancelRemovesTheRequest(t *testing.T) {
+	r := newOwnRig(t)
+	r.ask(t, "Pending")
+	r.cfg.CARequestCancel++
+	r.Apply(r.cfg)
+	for _, p := range []string{filepath.Join(r.PrivateDir, pendingKey), filepath.Join(r.StateDir, pendingCSR)} {
+		if onDisk(t, p) {
+			t.Fatalf("%s stayed", p)
+		}
+	}
+	if m := r.stat(t); m["ca_request_pending"] != false || m["ca_request_name"] != "" {
+		t.Fatalf("stats %v", m)
+	}
+	r.Apply(r.cfg) // the same counter again asks for nothing more
+	r.ask(t, "Again")
+	if !onDisk(t, filepath.Join(r.PrivateDir, pendingKey)) {
+		t.Fatal("a request after a cancel was not made")
+	}
+}
+
+func TestRequestClearsTheImportError(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.uploadCert(t, makeCA(t, "Some CA", ecKey(t, elliptic.P256()), nil).pem)
+	r.Apply(r.cfg)
+	if r.stat(t)["ca_import_error"] == "" {
+		t.Fatal("no reason to clear")
+	}
+	r.ask(t, "Pending")
+	if reason := r.stat(t)["ca_import_error"]; reason != "" {
+		t.Fatalf("reason stayed: %v", reason)
+	}
+}
+
+func TestRequestWorksWithTheFeatureOff(t *testing.T) {
+	r := newOwnRig(t)
+	r.cfg.Enabled = false
+	r.ask(t, "Off")
+	if !onDisk(t, filepath.Join(r.PrivateDir, pendingKey)) {
+		t.Fatal("no request while off")
+	}
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	r.uploadCert(t, append(append([]byte{}, signRequest(t, r.csr(t), root).pem...), root.pem...))
+	r.Apply(r.cfg)
+	if m := r.stat(t); m["ca_own"] != true {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+// The pending key lives in private only: state is served to the owner.
+func TestNoPrivateKeyInState(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	r.ask(t, "Pending")
+	root := makeCA(t, "Owner root", ecKey(t, elliptic.P256()), nil)
+	check := func(when string) {
+		entries, err := os.ReadDir(r.StateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			raw, err := os.ReadFile(filepath.Join(r.StateDir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(raw, []byte("PRIVATE KEY")) {
+				t.Fatalf("%s: %s holds a private key", when, e.Name())
+			}
+		}
+		if strings.Contains(r.logs.String(), "PRIVATE KEY") {
+			t.Fatalf("%s: the log holds a key", when)
+		}
+	}
+	check("pending")
+	r.uploadCert(t, append(append([]byte{}, signRequest(t, r.csr(t), root).pem...), root.pem...))
+	r.Apply(r.cfg)
+	check("installed")
 }

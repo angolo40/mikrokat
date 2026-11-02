@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -74,5 +75,39 @@ func TestStatsEmptyAutoIsList(t *testing.T) {
 	json.Unmarshal(raw, &m)
 	if string(m["auto_bypass"]) != "[]" || string(m["relayed"]) != "{}" {
 		t.Fatalf("got %s / %s", m["auto_bypass"], m["relayed"])
+	}
+}
+
+func TestLastRefusedNamesTheSource(t *testing.T) {
+	st := NewStats()
+	st.RefusedFrom(net.ParseIP("::ffff:192.0.2.9"))
+	st.Refused() // over a cap: no source
+	path := filepath.Join(t.TempDir(), "stats.json")
+	if err := st.WriteFile(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["refused"] != float64(2) || m["last_refused"] != "192.0.2.9" || m["last_refused_at"].(float64) < 1e9 {
+		t.Fatalf("stats %v", m)
+	}
+}
+
+func TestStrangerSetsLastRefusedButACapDoesNot(t *testing.T) {
+	e := &Engine{Stats: NewStats()}
+	s := NewServer(e, t.TempDir(), t.TempDir())
+	ln := &net.TCPListener{}
+	s.ln = ln
+	s.cfg = Config{Devices: []string{"10.1.1.1"}}
+	if _, _, ok := s.admit(ln, net.ParseIP("10.1.1.2")); ok {
+		t.Fatal("a stranger was admitted")
+	}
+	s.total = maxConns
+	s.admit(ln, net.ParseIP("10.1.1.1"))
+	if e.Stats.lastRefused != "10.1.1.2" || e.Stats.refused != 2 {
+		t.Fatalf("last %q refused %d", e.Stats.lastRefused, e.Stats.refused)
 	}
 }
