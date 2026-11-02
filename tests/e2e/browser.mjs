@@ -269,12 +269,13 @@ async function connections(page) {
   await shot(page, 'connections-light');
 
   step('the filters narrow the list');
-  // The newest 200 are all from 127.0.0.1 after the load tests, so the filter is shown on the other source: the refused one.
+  // The newest 200 are all from 127.0.0.1 after the load tests, so the filter is shown on the refused source. The menu leaves refused sources out, so it is reached by the address.
   const sources = await page.locator('select[name=device] option').evaluateAll((os) => os.map((o) => o.value).filter((v) => v));
-  const other = sources.find((v) => v !== '127.0.0.1');
-  if (!other || !sources.includes('127.0.0.1')) fail(`the device filter offers ${JSON.stringify(sources)}`);
-  await page.selectOption('select[name=device]', other);
-  await Promise.all([page.waitForURL(/device=/), page.click('.filters button')]);
+  const refusedRow = page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has-text("Refused: Not on the device list")').first();
+  const other = (await refusedRow.locator('td').nth(1).innerText()).trim();
+  if (!other || other === '127.0.0.1') fail(`the refused source is ${other}`);
+  if (!sources.includes('127.0.0.1') || sources.includes(other) || sources.includes('(refused)')) fail(`the device filter offers ${JSON.stringify(sources)}`);
+  await page.goto(`${APP}/connections?device=${encodeURIComponent(other)}`);
   const byDevice = await page.locator('section.panel:has(h2:has-text("Recent connections")) tr:has(td)').allTextContents();
   if (!byDevice.length || byDevice.length >= all) fail(`the device filter left ${byDevice.length} of ${all} rows`);
   if (byDevice.some((t) => !t.includes('Refused: Not on the device list'))) fail('the device filter kept a row of another device');
