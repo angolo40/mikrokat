@@ -50,6 +50,9 @@ settings = {
     "tls_devices": [],
     "tls_bypass": [],
     "tls_ca_generation": 0,
+    "tls_ca_request": 0,
+    "tls_ca_request_name": "Mikrokat Inspection CA",
+    "tls_ca_request_cancel": 0,
     "tls_auto_remove": [],
     "router_host": os.environ.get("ROUTER_HOST", ""),
     "router_user": os.environ.get("ROUTER_USER", "mikrokat"),
@@ -180,7 +183,9 @@ def write_tls_control():
     """
     config = {"enabled": settings["tls_enabled"], "socks": settings["tls_socks"], "socks_port": settings["tls_socks_port"],
               "devices": list(settings["tls_devices"]), "bypass": list(settings["tls_bypass"]),
-              "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"])}
+              "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"]),
+              "ca_request": settings["tls_ca_request"], "ca_request_name": settings["tls_ca_request_name"],
+              "ca_request_cancel": settings["tls_ca_request_cancel"]}
     path = os.path.join(TLS_DIR, "control", "config.json")
     temp = path + ".tmp"
     try:
@@ -225,16 +230,56 @@ def regenerate_ca():
     return write_tls_control()
 
 
+CA_NAME_MAX = 64
+
+
+def ca_name_error(name):
+    """Return why a CA name is not acceptable, or None. Printable ASCII, no quotes or angle brackets."""
+    if not 1 <= len(name) <= CA_NAME_MAX:
+        return f"The CA name must have 1 to {CA_NAME_MAX} characters."
+    if name != name.strip() or not all(" " <= c <= "~" for c in name) or any(c in name for c in "\"'<>"):
+        return "The CA name may hold only printable ASCII characters, without quotes or angle brackets, and no space at either end."
+    return None
+
+
+def request_ca(name):
+    """Ask the TLS proxy for a new key and signing request. Return an error message, or None when it worked.
+
+    A counter, because the proxy acts when it changes. The key is made there and never leaves it.
+    """
+    error = ca_name_error(name)
+    if error:
+        return error
+    with lock:
+        settings["tls_ca_request"] += 1
+        settings["tls_ca_request_name"] = name
+        write_json(SETTINGS_FILE, settings)
+    return write_tls_control()
+
+
+def cancel_ca_request():
+    """Ask the TLS proxy to delete the pending key and signing request. Return an error message, or None."""
+    with lock:
+        settings["tls_ca_request_cancel"] += 1
+        write_json(SETTINGS_FILE, settings)
+    return write_tls_control()
+
+
 def upload_ca(chain, key):
     """Leave an uploaded CA for the TLS proxy. Return an error message, or None when it worked.
+
+    With no key the certificate answers a pending request, and only it is left.
 
     Only the proxy can check it, and it deletes both files either way. The key goes first and the
     certificate last, each through a rename, so the proxy sees a pair only when it is whole.
     """
     paths = [os.path.join(TLS_DIR, "incoming", name) for name in ("own-ca.key", "own-ca.pem")]
+    parts = list(zip(paths, (key, chain)))
+    if not key:
+        parts, paths = parts[1:], paths[1:]
     with lock:
         try:
-            for path, data in zip(paths, (key, chain)):
+            for path, data in parts:
                 with open(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as target:
                     target.write(data)
                 os.replace(path + ".tmp", path)

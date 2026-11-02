@@ -58,8 +58,15 @@ NOTICES = {
     "ca-regenerated": "A new CA is being made. Delete the old Mikrokat local CA from every device and import the new one: a new CA does not revoke the old one.",
     "bypass-removed": "Removed. The proxy inspects that name again within a few seconds.",
     "ca-uploaded": "Uploaded. The proxy checks it and deletes the files within a few seconds. Reload this page to see the result.",
+    "ca-requested": "The proxy is making the key and the request. Reload this page in a few seconds, then download the request.",
+    "ca-request-cancelled": "The pending key and request are being deleted.",
     "ca-removed": "The proxy goes back to the generated CA within a few seconds. Devices now need that one: download it from this tab and import it.",
 }
+CA_EXTENSIONS = """basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid, issuer
+"""
 STYLE = """
 :root { color-scheme: light; --surface: #fcfcfb; --raised: #f4f3ef; --card: #ffffff; --line: #e4e3de; --text: #0b0b0b; --muted: #5f5e5a;
   --accent: #2a78d6; --accent-soft: #e3eefb; --accent-text: #fff; --error: #b3261e; --series-1: #2a78d6; --series-2: #eb6834; --shadow: 0 1px 2px rgb(0 0 0 / 6%);
@@ -180,6 +187,9 @@ pre { background: var(--raised); border-radius: 8px; padding: 10px; overflow-x: 
 .howto summary { cursor: pointer; color: var(--accent); }
 .howto ol { padding-left: 20px; margin: 8px 0; }
 .howto p { color: var(--muted); margin: 6px 0; }
+.scroll { max-height: 220px; overflow-y: auto; margin: 8px 0 0; padding-left: 20px; }
+.recommended { margin-left: 8px; vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
+.command { display: block; margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: var(--raised); font-size: 12px; overflow-x: auto; white-space: pre; user-select: all; }
 .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 12px; position: relative; }
 .switch span { width: 38px; height: 22px; flex: none; border-radius: 11px; background: var(--line); position: relative; transition: background .15s; }
 .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
@@ -706,7 +716,29 @@ def own_ca_card(stats):
     # With the proxy down nothing would take the files, and the key would stay in the folder.
     off = "" if store.tls_running(stats) else " disabled"
     silent = ('<p class="note error">The proxy is not running, so an upload would not be processed. Start it, then upload.</p>' if off else "")
-    return (f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}{silent}'
+    pending = stats.get("ca_request_pending") is True
+    running = store.tls_running(stats)
+    request_name = esc(str(stats.get("ca_request_name") or ""))
+    again = "" if not pending else ' onclick="return confirm(\'A request is already pending. Make a new one? The pending key is deleted, and a certificate signed for it will no longer fit.\')"'
+    create = (f'<section class="card"><h2>Create a key here<span class="badge recommended">Recommended</span></h2>'
+              '<p>The proxy makes the key and keeps it, and you sign a request with your own root. The key never crosses the network, and the root key is never asked for: signing happens on your machine, not on this page.</p>'
+              f'{silent}'
+              f'<label class="field"><span>CA name</span><input type="text" name="ca_request_name" form="own-ca-request" value="Mikrokat Inspection CA" maxlength="64" required{off}>'
+              '<span class="hint">1 to 64 printable ASCII characters. It becomes the name of the CA on every device.</span></label>'
+              f'<div class="actions"><button form="own-ca-request"{off}{again}>Create request</button></div>')
+    if pending:
+        command = "openssl x509 -req -in mikrokat-ca.csr -CA root.crt -CAkey root.key -CAcreateserial -days 365 -sha256 -extfile mikrokat-ca.ext -out mikrokat-ca.pem"
+        create += (f'<h3>Request pending: {request_name}</h3><ol class="steps">'
+                   '<li>Download both files: <a href="/tls/own-ca.csr">Download request</a> and <a href="/tls/own-ca.ext">Download extensions</a>.</li>'
+                   f'<li>Sign the request with your root, in the folder that holds them:<code class="command">{esc(command)}</code></li>'
+                   '<li>Upload the certificate you made. A chain is fine: the signed CA first, then the root if you like.</li></ol>'
+                   f'<label class="field"><span>Signed certificate</span><input type="file" name="chain" form="own-ca-signed" required{off}>'
+                   '<span class="hint">PEM. No key is needed: the proxy has it.</span></label>'
+                   f'<div class="actions"><button form="own-ca-signed"{off}>Upload signed certificate</button>'
+                   '<button class="ghost" form="own-ca-cancel" onclick="return confirm(\'Cancel the request? The pending key and request are deleted.\')">Cancel request</button></div>')
+    create += '</section>'
+    return (create + f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}'
+            '<h3>Or upload a certificate and key you already have</h3>'
             '<p class="note error">This page is plain HTTP unless you reached it through HTTPS, so the private key crosses the network unencrypted. Upload only from a trusted network.</p>'
             f'<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required{off}>'
             '<span class="hint">PEM. The signing CA first, then any intermediates, up to the root if you like.</span></label>'
@@ -721,8 +753,10 @@ def https_card(host, switch, field):
     stats = store.tls_status()
     regenerate = ('<span class="hint">Regenerate does not apply: this is your own CA. Replace it or stop using it below.</span>' if stats.get("ca_own") is True else
                   '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button>')
-    names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in list(store.names.items())[:20])
-    known = f'<details class="howto"><summary>Known devices</summary><ul>{names}</ul></details>' if names else ""
+    # A copy, because the poller adds names while this page is built. All of them, by name, in a list that scrolls.
+    known_names = sorted(dict(store.names).items(), key=lambda item: (str(item[1]).lower(), item[0]))
+    names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in known_names)
+    known = f'<details class="howto"><summary>Known devices ({len(known_names)})</summary><ul class="scroll">{names}</ul></details>' if names else ""
     pac = f"http://{esc(host)}/tls.pac"
     warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in EVE for as long as Keep logs for says, and in EveBox for 7 days whatever is set. '
                'Inspect only your own devices, or with the consent of the person using them.</p>'
@@ -746,7 +780,11 @@ def https_card(host, switch, field):
     relayed_text = ", ".join(f"{esc(str(k))}: {esc(str(v))}" for k, v in sorted(relayed.items())) or "none"
     if stats:
         age = int(time.time()) - stats["at"] if isinstance(stats.get("at"), int) else None
-        counters = (f'<p class="hint">Inspected: {esc(str(stats.get("inspected", 0)))}. Passed through uninspected: {relayed_text}. Refused: {esc(str(stats.get("refused", 0)))}. '
+        last = stats.get("last_refused")
+        last_at = stats.get("last_refused_at")
+        since = f", {max(int(time.time()) - last_at, 0)} seconds ago" if isinstance(last_at, int) and not isinstance(last_at, bool) and last_at > 0 else ""
+        refused_from = (f' Last refused: {esc(str(last))}{since}: add it to Devices if this is your device.' if isinstance(last, str) and last else "")
+        counters = (f'<p class="hint">Inspected: {esc(str(stats.get("inspected", 0)))}. Passed through uninspected: {relayed_text}. Refused: {esc(str(stats.get("refused", 0)))}.{refused_from} '
                     f'Handshake failures: {esc(str(stats.get("handshake_failures", 0)))}. Copied: {esc(str(stats.get("copied_bytes", 0)))} bytes. '
                     f'Copies dropped: {esc(str(stats.get("copies_dropped", 0)))}.' + (f' Updated {age} seconds ago.' if age is not None else "") + '</p>')
     else:
@@ -869,7 +907,10 @@ def settings_page(host, notice="", error="", tab=""):
     body = (f'<form method="post" action="/settings" autocomplete="off">{hidden()}{radios}<div class="tabbar">{labels}</div>{content}'
             f'<div class="savebar"><button>Save changes</button></div></form>'
             # Its fields sit on the tab, inside the form above, and join this one through form="own-ca".
-            f'<form id="own-ca" method="post" action="/tls/own-ca" enctype="multipart/form-data">{hidden()}</form>')
+            f'<form id="own-ca" method="post" action="/tls/own-ca" enctype="multipart/form-data">{hidden()}</form>'
+            f'<form id="own-ca-signed" method="post" action="/tls/own-ca" enctype="multipart/form-data">{hidden()}</form>'
+            f'<form id="own-ca-request" method="post" action="/tls/own-ca/request">{hidden()}</form>'
+            f'<form id="own-ca-cancel" method="post" action="/tls/own-ca/request/cancel">{hidden()}</form>')
     guide = GUIDE.format(ip=esc(host.split(":")[0]))
     return layout("/settings", "Settings", f'<div class="with-guide"><div>{body}</div>{guide}</div>', host, notice, error)
 
@@ -1158,6 +1199,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if url.path in ("/tls/own-ca.csr", "/tls/own-ca.ext"):
+            self.signing_file(url.path)
+            return
         if url.path == "/live/stream":
             self.stream()
             return
@@ -1177,6 +1221,26 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(settings_page(host, NOTICES.get(code, ""), "", query.get("tab", [""])[0]))
         else:
             self.reply(page(host, NOTICES.get(code, "")))
+
+    def signing_file(self, path):
+        """The request the proxy made, and the extensions to sign it with. Neither holds a secret."""
+        if path == "/tls/own-ca.ext":
+            data, name = CA_EXTENSIONS.encode(), "mikrokat-ca.ext"
+        else:
+            name = "mikrokat-ca.csr"
+            try:
+                with open(os.path.join(store.TLS_DIR, "state", "own-ca.csr"), "rb") as source:
+                    data = source.read(65536)
+            except OSError:
+                self.send_error(404, "No request is pending")
+                return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def own_ca_upload(self):
         """Take a CA from the upload form. Only the proxy can check it, and the tab shows what it said.
@@ -1212,11 +1276,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         chain, key = fields.get("chain"), fields.get("key")
-        if not chain or not key:
-            self.reply(settings_page(host, "", "Choose both the certificate chain and the private key.", "https"))
+        if not chain:
+            self.reply(settings_page(host, "", "Choose the certificate chain, and the private key unless you are answering a pending request.", "https"))
             return
-        if not store.tls_running():
+        status = store.tls_status()
+        if not store.tls_running(status):
             self.reply(settings_page(host, "", "The proxy is not running, so nothing was stored. Start it and upload again.", "https"))
+            return
+        if not key and status.get("ca_request_pending") is not True:
+            self.reply(settings_page(host, "", "No request is pending. Create a request, or upload the key too.", "https"))
             return
         error = store.upload_ca(chain, key)
         if error:
@@ -1287,8 +1355,14 @@ class Handler(BaseHTTPRequestHandler):
             actions.reset()
             actions.reset_copy()
             done, page = "saved", "/settings"
-        elif self.path in ("/tls/regenerate", "/tls/bypass/remove", "/tls/own-ca/remove"):
-            if self.path == "/tls/regenerate":
+        elif self.path in ("/tls/regenerate", "/tls/bypass/remove", "/tls/own-ca/remove", "/tls/own-ca/request", "/tls/own-ca/request/cancel"):
+            if self.path == "/tls/own-ca/request":
+                done = "ca-requested"
+                error = store.ca_name_error(form.get("ca_request_name", "")) or (
+                    None if store.tls_running() else "The proxy is not running, so nothing was asked. Start it and try again.") or store.request_ca(form["ca_request_name"])
+            elif self.path == "/tls/own-ca/request/cancel":
+                error, done = store.cancel_ca_request(), "ca-request-cancelled"
+            elif self.path == "/tls/regenerate":
                 done = "ca-regenerated"
                 # A page opened before an upload still has the button. The proxy would keep the
                 # request, and replace the generated CA when the owner goes back to it.
@@ -1308,7 +1382,8 @@ class Handler(BaseHTTPRequestHandler):
             if error:
                 self.reply(settings_page(host, "", error, "https"))
                 return
-            store.activity_add("system", {"/tls/regenerate": "Regenerated the HTTPS inspection CA", "/tls/own-ca/remove": "Asked the proxy to stop using the own CA"}.get(self.path, "Removed an automatic HTTPS bypass"))
+            store.activity_add("system", {"/tls/regenerate": "Regenerated the HTTPS inspection CA", "/tls/own-ca/remove": "Asked the proxy to stop using the own CA",
+                                    "/tls/own-ca/request": "Asked the proxy for a key and a signing request for the own CA", "/tls/own-ca/request/cancel": "Cancelled the pending own CA request"}.get(self.path, "Removed an automatic HTTPS bypass"))
             self.send_response(303)
             self.send_header("Location", f"/settings?ok={done}&tab=https")
             self.end_headers()

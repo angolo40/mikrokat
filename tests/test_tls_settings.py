@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 sys.path.insert(0, "/app")
@@ -49,7 +50,7 @@ class Base(unittest.TestCase):
         os.makedirs(os.path.join(store.TLS_DIR, "incoming"))
         store.settings.clear()
         store.settings.update(copy.deepcopy(self.saved))
-        store.settings.update(tls_enabled=False, tls_socks=True, tls_socks_port=1080, tls_devices=[], tls_bypass=[], tls_ca_generation=0, tls_auto_remove=[])
+        store.settings.update(tls_enabled=False, tls_socks=True, tls_socks_port=1080, tls_devices=[], tls_bypass=[], tls_ca_generation=0, tls_auto_remove=[], tls_ca_request=0, tls_ca_request_name="Mikrokat Inspection CA", tls_ca_request_cancel=0)
 
     def tearDown(self):
         store.settings.clear()
@@ -85,7 +86,8 @@ class TlsSettings(Base):
         error = store.save_settings(full_form(tls_enabled="on", tls_devices="10.0.0.5\r\n10.0.0.5\n\nfe80::1\n", tls_bypass="Bank.Example.com\n*.pay.example"))
         self.assertIsNone(error)
         self.assertEqual(self.control(), {"enabled": True, "socks": True, "socks_port": 1080, "devices": ["10.0.0.5", "fe80::1"],
-                                          "bypass": ["bank.example.com", "*.pay.example"], "ca_generation": 0, "auto_remove": []})
+                                          "bypass": ["bank.example.com", "*.pay.example"], "ca_generation": 0, "auto_remove": [],
+                                          "ca_request": 0, "ca_request_name": "Mikrokat Inspection CA", "ca_request_cancel": 0})
 
     def test_status_survives_bad_json(self):
         self.assertEqual(store.tls_status(), {})
@@ -186,6 +188,40 @@ class Page(Base):
         self.assertNotIn("<img src=x>", page)
         self.assertNotIn("<b>x</b>", page)
         self.assertIn("&lt;script&gt;alert(1)", page)
+
+
+def many_names(count):
+    return {f"10.0.1.{n}": f"host-{n:02d}" for n in range(count)}
+
+
+class KnownDevices(Base):
+    def page(self):
+        return web.settings_page("mikrokat.lan:8088", tab="https")
+
+    def test_every_name_is_listed_sorted(self):
+        store.names.update(many_names(38))
+        store.names["10.0.2.1"] = "Alpha-PC"
+        try:
+            page = self.page()
+        finally:
+            for ip in list(store.names):
+                if ip.startswith(("10.0.1.", "10.0.2.")):
+                    del store.names[ip]
+        self.assertEqual(page.count("<li>10.0.1."), 38)
+        self.assertIn("host-37", page)
+        self.assertIn("Alpha-PC", page)
+        self.assertLess(page.index("Alpha-PC"), page.index("host-00"))
+        self.assertLess(page.index("host-05"), page.index("host-06"))
+
+    def test_the_list_scrolls_and_is_escaped(self):
+        store.names["10.0.3.1"] = "<img src=x onerror=alert(1)>"
+        try:
+            page = self.page()
+        finally:
+            del store.names["10.0.3.1"]
+        self.assertIn('class="scroll"', page)
+        self.assertNotIn("<img src=x", page)
+        self.assertIn("&lt;img src=x", page)
 
 
 CHAIN = b"-----BEGIN CERTIFICATE-----\nnot really a chain\n-----END CERTIFICATE-----\n"
@@ -391,10 +427,11 @@ class OwnCaUpload(Web):
         self.assertEqual(self.incoming(), [])
 
     def test_a_file_is_missing(self):
-        for parts in ({"chain": CHAIN}, {"key": KEY}, {"chain": CHAIN, "key": b""}, {"chain": b"", "key": KEY}):
+        for parts, said in (({"chain": CHAIN}, "No request is pending"), ({"key": KEY}, "Choose the certificate chain"),
+                            ({"chain": CHAIN, "key": b""}, "No request is pending"), ({"chain": b"", "key": KEY}, "Choose the certificate chain")):
             status, _, text = self.post("/tls/own-ca", multipart(token=self.token, **parts))
             self.assertEqual(status, 200)
-            self.assertIn("both", text)
+            self.assertIn(said, text)
         self.assertEqual(self.incoming(), [])
 
     def test_nothing_stays_when_the_second_write_fails(self):
@@ -503,7 +540,7 @@ class OwnCaTab(Web):
         self.assertEqual(sorted(c["name"] for c in mine if c.get("type") == "file"), ["chain", "key"])
         self.assertTrue(any(c.get("name") == "token" and c.get("value") == web.csrf_token for c in mine))
         self.assertTrue(any(c["tag"] == "button" for c in mine))
-        self.assertFalse([c for c in parser.controls if c.get("type") == "file" and c["owner"] != owner])
+        self.assertFalse([c for c in parser.controls if c.get("type") == "file" and c["owner"] not in (owner, "own-ca-signed")])
 
     def test_upload_is_off_while_the_proxy_is_silent(self):
         for values in ({"at": 1}, {"at": "soon"}):
@@ -579,6 +616,199 @@ class OwnCaTab(Web):
     def test_odd_values_do_not_break_the_page(self):
         self.stats(ca_own="yes", ca_subject=["x"], ca_chain="many", ca_expires="soon", ca_import_error=5)
         self.assertIn("HTTPS inspection", self.page())
+
+
+class RequestFlow(Web):
+    def form(self, token=None, **values):
+        values = {"token": web.csrf_token if token is None else token, **values}
+        return urllib.parse.urlencode(values).encode(), "application/x-www-form-urlencoded"
+
+    def get(self, path, cookie=None):
+        client = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=20)
+        self.addCleanup(client.close)
+        client.request("GET", path, headers={"Cookie": self.cookie if cookie is None else cookie})
+        reply = client.getresponse()
+        return reply.status, reply.getheader("Location"), reply.getheader("Content-Disposition"), reply.read()
+
+    def test_create_asks_the_proxy(self):
+        status, location, _ = self.post("/tls/own-ca/request", *self.form(ca_request_name="Home CA"))
+        self.assertEqual((status, location), (303, "/settings?ok=ca-requested&tab=https"))
+        control = self.control()
+        self.assertEqual((control["ca_request"], control["ca_request_name"], control["ca_request_cancel"]), (1, "Home CA", 0))
+        self.post("/tls/own-ca/request", *self.form(ca_request_name="Home CA"))
+        self.assertEqual(self.control()["ca_request"], 2)
+
+    def test_create_and_cancel_need_session_and_token(self):
+        for path in ("/tls/own-ca/request", "/tls/own-ca/request/cancel"):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, *self.form("wrong", ca_request_name="x"))[0], 403)
+                body, content_type = self.form(ca_request_name="x")
+                self.assertEqual(self.post(path, body, content_type, cookie="")[1], "/login")
+        self.assertEqual(store.settings["tls_ca_request"], 0)
+        self.assertEqual(store.settings["tls_ca_request_cancel"], 0)
+
+    def test_bad_names_are_refused(self):
+        for name in ("", "   ", "x" * 65, 'say "hi"', "<b>", "a>b", "caf\u00e9", "tab\there", "line\nbreak"):
+            with self.subTest(name=name):
+                status, location, text = self.post("/tls/own-ca/request", *self.form(ca_request_name=name))
+                self.assertEqual(status, 200)
+                self.assertIn('class="note error"', text)
+        self.assertEqual(store.settings["tls_ca_request"], 0)
+        self.assertEqual(self.post("/tls/own-ca/request", *self.form(ca_request_name="x" * 64))[0], 303)
+
+    def test_create_needs_a_running_proxy(self):
+        os.remove(os.path.join(store.TLS_DIR, "state", "stats.json"))
+        status, _, text = self.post("/tls/own-ca/request", *self.form(ca_request_name="Home CA"))
+        self.assertEqual(status, 200)
+        self.assertIn("The proxy is not running", text)
+        self.assertEqual(store.settings["tls_ca_request"], 0)
+
+    def test_cancel_raises_its_counter(self):
+        self.assertEqual(self.post("/tls/own-ca/request/cancel", *self.form())[1], "/settings?ok=ca-request-cancelled&tab=https")
+        self.assertEqual(self.control()["ca_request_cancel"], 1)
+
+    def test_downloads_need_a_login(self):
+        with open(os.path.join(store.TLS_DIR, "state", "own-ca.csr"), "wb") as target:
+            target.write(b"-----BEGIN CERTIFICATE REQUEST-----\nabc\n-----END CERTIFICATE REQUEST-----\n")
+        for path in ("/tls/own-ca.csr", "/tls/own-ca.ext"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path, cookie="")[1], "/login")
+                self.assertEqual(self.get(path)[0], 200)
+
+    def test_csr_download(self):
+        self.assertEqual(self.get("/tls/own-ca.csr")[0], 404)
+        with open(os.path.join(store.TLS_DIR, "state", "own-ca.csr"), "wb") as target:
+            target.write(b"REQUEST")
+        status, _, disposition, body = self.get("/tls/own-ca.csr")
+        self.assertEqual((status, body), (200, b"REQUEST"))
+        self.assertIn('filename="mikrokat-ca.csr"', disposition)
+
+    def test_ext_download(self):
+        status, _, disposition, body = self.get("/tls/own-ca.ext")
+        self.assertEqual(status, 200)
+        self.assertIn('filename="mikrokat-ca.ext"', disposition)
+        self.assertEqual(body.decode().splitlines(), ["basicConstraints = critical, CA:TRUE, pathlen:0", "keyUsage = critical, keyCertSign, cRLSign",
+                                                       "subjectKeyIdentifier = hash", "authorityKeyIdentifier = keyid, issuer"])
+
+    def test_certificate_alone_needs_a_pending_request(self):
+        self.stats(ca_request_pending=False)
+        status, _, text = self.upload(key=b"")
+        self.assertEqual(status, 200)
+        self.assertIn("No request is pending. Create a request, or upload the key too.", text)
+        self.assertEqual(self.incoming(), [])
+        self.stats()
+        self.assertIn("No request is pending", self.upload(key=b"")[2])
+        self.assertEqual(self.incoming(), [])
+
+    def test_certificate_alone_is_taken_when_a_request_is_pending(self):
+        self.stats(ca_request_pending=True)
+        status, location, _ = self.upload(key=b"")
+        self.assertEqual((status, location), (303, "/settings?ok=ca-uploaded&tab=https"))
+        self.assertEqual(self.incoming(), ["own-ca.pem"])
+        with open(os.path.join(store.TLS_DIR, "incoming", "own-ca.pem"), "rb") as source:
+            self.assertEqual(source.read(), CHAIN)
+
+    def test_certificate_alone_is_gated_on_the_proxy_running(self):
+        self.stats(at=1, ca_request_pending=True)
+        self.assertIn("The proxy is not running", self.upload(key=b"")[2])
+        self.assertEqual(self.incoming(), [])
+
+    def test_a_missing_key_part_counts_as_empty(self):
+        self.stats(ca_request_pending=True)
+        body = multipart(token=self.token, chain=CHAIN)
+        self.assertEqual(self.post("/tls/own-ca", body)[0], 303)
+        self.assertEqual(self.incoming(), ["own-ca.pem"])
+
+    def test_the_pair_still_needs_both(self):
+        self.assertIn("Choose", self.upload(chain=b"")[2])
+
+
+class RequestTab(Web):
+    def page(self):
+        return web.settings_page("mikrokat.lan:8088", tab="https")
+
+    def forms(self):
+        parser = Forms()
+        parser.feed(self.page())
+        return parser
+
+    def test_create_card_comes_first_and_is_recommended(self):
+        page = self.page()
+        self.assertIn("Create a key here", page)
+        self.assertIn("Recommended", page)
+        self.assertIn("Or upload a certificate and key you already have", page)
+        self.assertLess(page.index("Create a key here"), page.index("Or upload a certificate and key you already have"))
+        self.assertIn("never asked for", page)
+        self.assertIn("plain HTTP unless you reached it through HTTPS", page)
+
+    def test_create_form(self):
+        self.stats(ca_request_pending=False)
+        parser = self.forms()
+        form = parser.forms["own-ca-request"]
+        self.assertEqual((form["method"], form["action"]), ("post", "/tls/own-ca/request"))
+        mine = [c for c in parser.controls if c["owner"] == "own-ca-request"]
+        name = next(c for c in mine if c.get("name") == "ca_request_name")
+        self.assertEqual(name["value"], "Mikrokat Inspection CA")
+        self.assertEqual(name["maxlength"], "64")
+        self.assertTrue(any(c.get("name") == "token" for c in mine))
+        self.assertTrue(any(c["tag"] == "button" and "Create request" in self.page() for c in mine))
+        self.assertNotIn("confirm(", next(c for c in mine if c["tag"] == "button").get("onclick", ""))
+        self.assertNotIn("own-ca.csr", self.page())
+
+    def test_pending_card(self):
+        self.stats(ca_request_pending=True, ca_request_name="Home CA")
+        page = self.page()
+        self.assertIn('href="/tls/own-ca.csr"', page)
+        self.assertIn('href="/tls/own-ca.ext"', page)
+        self.assertIn("openssl x509 -req -in mikrokat-ca.csr -CA root.crt -CAkey root.key -CAcreateserial -days 365 -sha256 -extfile mikrokat-ca.ext -out mikrokat-ca.pem", page)
+        self.assertIn("Home CA", page)
+        parser = self.forms()
+        signed = [c for c in parser.controls if c["owner"] == "own-ca-signed"]
+        self.assertEqual([c["name"] for c in signed if c.get("type") == "file"], ["chain"])
+        self.assertTrue(any(c["tag"] == "button" for c in signed))
+        cancel = [c for c in parser.controls if c["owner"] == "own-ca-cancel"]
+        self.assertIn("confirm(", next(c for c in cancel if c["tag"] == "button")["onclick"])
+        self.assertEqual(parser.forms["own-ca-cancel"]["action"], "/tls/own-ca/request/cancel")
+        self.assertEqual(parser.forms["own-ca-signed"]["action"], "/tls/own-ca")
+        self.assertEqual(parser.forms["own-ca-signed"]["enctype"], "multipart/form-data")
+        create = next(c for c in parser.controls if c["owner"] == "own-ca-request" and c["tag"] == "button")
+        self.assertIn("confirm(", create["onclick"])
+
+    def test_forms_stand_alone(self):
+        self.stats(ca_request_pending=True, ca_request_name="Home CA")
+        self.assertFalse(self.forms().nested)
+
+    def test_controls_are_off_while_the_proxy_is_silent(self):
+        self.stats(at=1, ca_request_pending=True, ca_request_name="Home CA")
+        parser = self.forms()
+        for owner in ("own-ca-request", "own-ca-signed"):
+            mine = [c for c in parser.controls if c["owner"] == owner and c.get("type") != "hidden"]
+            self.assertTrue(mine)
+            self.assertTrue(all("disabled" in c for c in mine), (owner, mine))
+
+    def test_values_from_stats_are_escaped(self):
+        self.stats(ca_request_pending=True, ca_request_name="<script>alert(1)</script>")
+        page = self.page()
+        self.assertNotIn("<script>alert(1)", page)
+        self.assertIn("&lt;script&gt;alert(1)", page)
+        self.stats(ca_request_pending="yes", ca_request_name=["x"])
+        self.assertIn("Create a key here", self.page())
+
+
+class Numbers(Web):
+    def test_last_refused_is_shown_and_escaped(self):
+        self.stats(refused=6, last_refused="192.0.2.77", last_refused_at=int(time.time()) - 30)
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertIn("192.0.2.77", page)
+        self.assertIn("add it to Devices if this is your device", page)
+        self.stats(refused=6, last_refused="<script>alert(1)</script>", last_refused_at="x")
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertNotIn("<script>alert(1)", page)
+        self.assertIn("&lt;script&gt;alert(1)", page)
+
+    def test_nothing_is_said_without_one(self):
+        self.stats(refused=0)
+        self.assertNotIn("add it to Devices", web.settings_page("mikrokat.lan:8088", tab="https"))
 
 
 class Upload(Base):
