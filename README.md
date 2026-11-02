@@ -193,6 +193,26 @@ Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab
 
 To check it, open a site in that profile and look at its certificate: the issuer is `Mikrokat local CA`.
 
+### Use your own CA
+
+If you already run a private CA and your devices trust it, the proxy can sign with that one instead of the CA it generates.
+
+Make a dedicated intermediate CA for this, with a short life, and never upload your root. The key sits on this host, so anyone who gets in can impersonate any site to every device that trusts that CA.
+
+1. Prepare two PEM files. The chain holds the CA that signs first, then any intermediates, up to the root if you like. The key is RSA, ECDSA or Ed25519, in PKCS#8, PKCS#1 or SEC1, without a passphrase. To remove one, use `openssl pkey -in key.pem -out plain.pem`.
+2. On the HTTPS inspection tab, under **Your own CA**, choose both files and press **Upload**.
+3. Reload the page after a few seconds. The tab shows the CA in use, or why the upload was refused. A refused upload leaves the CA in use untouched.
+
+- **The key can cross your network in the clear.** The pages are plain HTTP unless they are behind HTTPS, so upload only from a trusted network.
+- **Where the key goes.** The app leaves both files in `data/tls/incoming`. The proxy checks them, moves a valid pair to `data/tls/private` and deletes both from `incoming`, whether they were valid or not. If the proxy is not running, they wait there until it starts.
+- **Devices must already trust it.** Mikrokat changes nothing on them. **Download the CA certificate** gives you the chain you uploaded.
+- **A CA with name constraints works only for those names.** For any other name the device refuses the certificate, and the automatic bypass then relays that name untouched.
+- **Regenerate does not apply,** so the tab hides it. To change the CA, upload a new one.
+- **If your CA expires while the proxy runs,** connections keep working uninspected and are counted as `ca_expired`, as with the generated CA. An alarm warns when it has less than 30 days left.
+- **If your CA stops being valid,** for example it has expired by the time the proxy restarts, the proxy does not go back to the generated CA by itself. The port stays closed, the tab and the alarm say why, and browsers using the PAC file go direct. You decide: upload a valid CA, or press **Stop using my CA**.
+- **Stop using my CA** deletes both files and returns to the generated CA, the same one as before if there was one. Devices then need that CA.
+- **If the key may have leaked,** revoke that CA on your own systems and stop using it here, and destroy any backup that holds `data/tls/private`. Deleting it from this host does not stop a copy from working.
+
 ### The PAC file
 
 `/tls.pac` tells a browser where to send its traffic, and it needs no login. While the feature is on, it answers `SOCKS5 <host>:1080; DIRECT` for `https:` and `wss:` addresses, which means use the proxy, or go direct if the proxy does not answer. Everything else goes direct: other schemes, plain host names and private addresses. The proxy inspects none of that, and relaying it would only hide the real device. While the feature is off, the file answers `DIRECT`.
