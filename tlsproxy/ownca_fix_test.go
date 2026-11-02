@@ -177,3 +177,43 @@ func TestChangingTheCAForgetsGoodHandshakes(t *testing.T) {
 		t.Fatalf("a handshake with the old CA still counts: %q", got)
 	}
 }
+
+// The page says the CA in use has not changed whenever there is an import
+// error, so it must not stay after Stop.
+func TestStopClearsTheImportError(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	ca := makeCA(t, "Own CA", ecKey(t, elliptic.P256()), nil)
+	r.upload(t, ca.pem, pkcs8(t, ca.key))
+	r.Apply(r.cfg)
+	r.upload(t, []byte("hello\n"), []byte("hello\n"))
+	r.Apply(r.cfg)
+	if r.stat(t)["ca_import_error"] == "" {
+		t.Fatal("setup: the refused upload left no error")
+	}
+	r.requestRemoval(t)
+	r.Apply(r.cfg)
+	if got := r.stat(t)["ca_import_error"]; got != "" {
+		t.Fatalf("the error stayed after Stop: %v", got)
+	}
+}
+
+// A good install is not "the CA has not changed", whatever happens to the
+// files in the incoming folder afterwards.
+func TestNoImportErrorAfterAnInstallWhoseCleanupFailed(t *testing.T) {
+	r := newOwnRig(t)
+	r.Apply(r.cfg)
+	old := removeUploaded
+	removeUploaded = func(string) error { return syscall.EROFS }
+	defer func() { removeUploaded = old }()
+	ca := makeCA(t, "Own CA", ecKey(t, elliptic.P256()), nil)
+	r.upload(t, ca.pem, pkcs8(t, ca.key))
+	r.Apply(r.cfg)
+	m := r.stat(t)
+	if m["ca_own"] != true {
+		t.Fatalf("setup: the upload was not installed: %v", m)
+	}
+	if m["ca_import_error"] != "" {
+		t.Fatalf("an installed CA reports %q", m["ca_import_error"])
+	}
+}

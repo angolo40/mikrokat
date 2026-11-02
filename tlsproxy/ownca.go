@@ -325,8 +325,13 @@ func (s *Server) removeOwn() {
 		return
 	}
 	s.ownNews = true
+	s.Engine.Stats.SetImportError("")
 	log.Printf("own CA removed")
 }
+
+// removeUploaded deletes a file from the incoming folder. A variable so that a
+// test can make it fail, which a test running as root cannot do otherwise.
+var removeUploaded = os.Remove
 
 // importOwn takes an upload when both files are there, and deletes what stays
 // behind alone. Valid or not, a key never stays in the folder.
@@ -340,8 +345,9 @@ func (s *Server) importOwn() {
 	if certErr == nil && keyErr == nil {
 		err := s.takeUpload(cert, key)
 		for _, path := range []string{key, cert} {
-			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-				err = fmt.Errorf("the uploaded files could not be deleted: %w", rerr)
+			if rerr := removeUploaded(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				// After a good install the page must not say the CA is unchanged.
+				log.Printf("the uploaded %s could not be deleted from the incoming folder: %v", filepath.Base(path), rerr)
 			}
 		}
 		s.importResult(err)
