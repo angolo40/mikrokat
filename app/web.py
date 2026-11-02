@@ -1,5 +1,6 @@
 """Mikrokat web pages: overview, rules, allowlist and settings. EveBox stays the place for events."""
 import base64
+import email
 import glob
 import gzip
 import hmac
@@ -37,6 +38,8 @@ RULES_DIR = os.environ.get("RULES_DIR", "/rules")
 SOCKET = os.environ.get("SURICATA_SOCKET", "/var/run/suricata/suricata-command.socket")
 LOG_GLOB = os.environ.get("EVE_GLOB", "/var/log/suricata/eve-*.json")
 MAX_BODY = 131072
+MAX_UPLOAD = 256 * 1024
+MAX_DISCARD = 16 * 1024 * 1024  # read and dropped past MAX_UPLOAD, so the browser gets to show the answer
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "worldmap.json"), encoding="utf-8") as source:
     WORLD = json.load(source)
 csrf_token = secrets.token_urlsafe(32)
@@ -54,6 +57,8 @@ NOTICES = {
     "unblocked-allowed": "Removed from the router and added to the allowlist.",
     "ca-regenerated": "A new CA is being made. Delete the old Mikrokat local CA from every device and import the new one: a new CA does not revoke the old one.",
     "bypass-removed": "Removed. The proxy inspects that name again within a few seconds.",
+    "ca-uploaded": "Uploaded. The proxy checks it and deletes the files within a few seconds. Reload this page to see the result.",
+    "ca-removed": "The proxy goes back to the generated CA within a few seconds. Devices now need that one: download it from this tab and import it.",
 }
 STYLE = """
 :root { color-scheme: light; --surface: #fcfcfb; --raised: #f4f3ef; --card: #ffffff; --line: #e4e3de; --text: #0b0b0b; --muted: #5f5e5a;
@@ -659,10 +664,59 @@ def pac_text(host):
             f'  return "SOCKS5 {found.group(1)}:{int(s["tls_socks_port"])}; DIRECT";\n}}\n')
 
 
+def parse_upload(content_type, body):
+    """Return the fields of a multipart form as {name: bytes}, or None when the request is not one."""
+    if not content_type.lower().startswith("multipart/form-data"):
+        return None
+    try:
+        message = email.message_from_bytes(f"Content-Type: {content_type}\r\n\r\n".encode(errors="replace") + body)
+        if message.defects or not message.is_multipart():
+            return None
+        fields = {}
+        for part in message.get_payload():
+            name, value = part.get_param("name", header="content-disposition"), part.get_payload(decode=True)
+            if isinstance(name, str) and isinstance(value, bytes):
+                fields[name] = value
+    except Exception:  # nested parts overflow the stack of the parser, and this body can be anything
+        return None
+    return fields or None
+
+
+def own_ca_card(stats):
+    """The CA in use and the upload form. The subject and the reasons come from an uploaded file."""
+    own = stats.get("ca_own") is True
+    chain = stats.get("ca_chain")
+    expires = stats.get("ca_expires")
+    until = esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(expires))) if isinstance(expires, int) and expires > 0 else "unknown"
+    subject = esc(str(stats.get("ca_subject") or ""))
+    if own and isinstance(chain, int) and chain > 0:
+        state = f'<p>In use: your own CA, {subject}, valid until {until}. Certificates in its chain: {chain}.</p>'
+    elif own:
+        reason = esc(str(stats.get("error") or "no reason given"))
+        state = (f'<p class="note error">Your own CA cannot be used: {reason}. The port stays closed, and the generated CA does not take over by itself. '
+                 'Upload a valid CA, or stop using yours.</p>')
+    elif subject:
+        state = f'<p>In use: the CA Mikrokat generated, {subject}, valid until {until}.</p>'
+    else:
+        state = '<p>In use: the CA Mikrokat generates when you turn this on.</p>'
+    refused = f'<p class="note error">The CA in use has not changed: {esc(str(stats["ca_import_error"]))}.</p>' if stats.get("ca_import_error") else ""
+    stop = ('<div class="actions"><button class="ghost" formaction="/tls/own-ca/remove" onclick="return confirm(\'Stop using your CA? The proxy goes back to the generated CA, and devices then need that one.\')">Stop using my CA</button></div>'
+            '<p class="hint">Devices then need the generated CA: download it from this tab and import it.</p>') if own else ""
+    return (f'<section class="card"><h2>Your own CA</h2><p>If you run a private CA that your devices already trust, the proxy can sign with it instead of the one it generates.</p>{state}{refused}'
+            '<p class="note error">This page is plain HTTP unless you reached it through HTTPS, so the private key crosses the network unencrypted. Upload only from a trusted network.</p>'
+            '<label class="field"><span>Certificate chain</span><input type="file" name="chain" form="own-ca" required>'
+            '<span class="hint">PEM. The signing CA first, then any intermediates, up to the root if you like.</span></label>'
+            '<label class="field"><span>Private key</span><input type="file" name="key" form="own-ca" required>'
+            '<span class="hint">PEM and unencrypted, for the first certificate. RSA, ECDSA or Ed25519.</span></label>'
+            f'<div class="actions"><button form="own-ca">Upload</button></div>{stop}</section>')
+
+
 def https_card(host, switch, field):
     """The HTTPS inspection tab. Names in stats.json came from client traffic, so everything from it is escaped."""
     s = store.settings
     stats = store.tls_status()
+    regenerate = ('<span class="hint">Regenerate does not apply: this is your own CA. Replace it or stop using it below.</span>' if stats.get("ca_own") is True else
+                  '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button>')
     names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in list(store.names.items())[:20])
     known = f'<details class="howto"><summary>Known devices</summary><ul>{names}</ul></details>' if names else ""
     pac = f"http://{esc(host)}/tls.pac"
@@ -677,8 +731,7 @@ def https_card(host, switch, field):
                f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}'
                f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_bypass"]))}</textarea>'
                f'<span class="hint">One name per line, for example bank.example.com or *.example.com. Banks and health sites belong here.</span></label>'
-               '<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>'
-               '<button class="ghost" formaction="/tls/regenerate" onclick="return confirm(\'Make a new CA? It does not revoke the old one: delete the old Mikrokat local CA from every device, then import the new one.\')">Regenerate the CA</button></div>')
+               f'<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>{regenerate}</div>')
     rows = "".join(
         f'<tr><td>{esc(str(e.get("device", "")))}</td><td>{esc(str(e.get("name", "")))}</td><td>{esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</td>'
         f'<td class="actions-cell"><button class="quiet" formaction="/tls/bypass/remove" name="entry" value="{esc(str(e.get("device", "")) + " " + str(e.get("name", "")), quote=True)}">Remove</button></td></tr>'
@@ -696,6 +749,7 @@ def https_card(host, switch, field):
         counters = '<p class="hint">No numbers from the proxy yet.</p>'
     return (f'<section class="card"><h2>HTTPS inspection</h2><p>Lets Suricata see inside the HTTPS of chosen devices, through a proxy that rebuilds the traffic as plain HTTP for it. Off by default.</p>'
             f'{warning}{options}</div></section>'
+            f'{own_ca_card(stats)}'
             f'<section class="card"><h2>Skipped automatically</h2><p>When a device refuses the Mikrokat certificate for a name twice within 10 minutes, the proxy lets that device and name through untouched for 24 hours.</p>{auto}</section>'
             f'<section class="card"><h2>Numbers</h2>{counters}</section>')
 
@@ -809,7 +863,9 @@ def settings_page(host, notice="", error="", tab=""):
     labels = "".join(f'<label for="tab-{k}">{t}</label>' for k, t in SETTINGS_TABS)
     content = "".join(f'<div class="pane" id="pane-{k}">{panes[k]}</div>' for k, _ in SETTINGS_TABS)
     body = (f'<form method="post" action="/settings" autocomplete="off">{hidden()}{radios}<div class="tabbar">{labels}</div>{content}'
-            f'<div class="savebar"><button>Save changes</button></div></form>')
+            f'<div class="savebar"><button>Save changes</button></div></form>'
+            # Its fields sit on the tab, inside the form above, and join this one through form="own-ca".
+            f'<form id="own-ca" method="post" action="/tls/own-ca" enctype="multipart/form-data">{hidden()}</form>')
     guide = GUIDE.format(ip=esc(host.split(":")[0]))
     return layout("/settings", "Settings", f'<div class="with-guide"><div>{body}</div>{guide}</div>', host, notice, error)
 
@@ -1118,7 +1174,56 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(page(host, NOTICES.get(code, "")))
 
+    def own_ca_upload(self):
+        """Take a CA from the upload form. Only the proxy can check it, and the tab shows what it said.
+
+        The body is read before any answer, or closing the socket resets the connection and the
+        browser shows that instead of the page.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        body = b""
+        if 0 <= length <= MAX_UPLOAD:
+            body = self.rfile.read(length)
+        else:
+            left = min(length, MAX_DISCARD)
+            while left > 0:
+                dropped = self.rfile.read(min(left, 65536))
+                if not dropped:
+                    break
+                left -= len(dropped)
+        if not self.authorized():
+            return
+        host = self.headers.get("Host", "localhost")
+        if length > MAX_UPLOAD:
+            self.reply(settings_page(host, "", f"That upload is over the limit of {MAX_UPLOAD // 1024} KiB.", "https"))
+            return
+        fields = parse_upload(self.headers.get("Content-Type", ""), body)
+        if fields is None:
+            self.reply(settings_page(host, "", "That upload could not be read. Try the form on this tab again.", "https"))
+            return
+        if not hmac.compare_digest(fields.get("token", b""), csrf_token.encode()):
+            self.send_error(403)
+            return
+        chain, key = fields.get("chain"), fields.get("key")
+        if not chain or not key:
+            self.reply(settings_page(host, "", "Choose both the certificate chain and the private key.", "https"))
+            return
+        error = store.upload_ca(chain, key)
+        if error:
+            self.reply(settings_page(host, "", error, "https"))
+            return
+        store.activity_add("system", "Uploaded an own CA for HTTPS inspection")
+        self.send_response(303)
+        self.send_header("Location", "/settings?ok=ca-uploaded&tab=https")
+        self.end_headers()
+
     def do_POST(self):
+        if self.path == "/tls/own-ca":
+            self.own_ca_upload()
+            return
         length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
         form = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(length).decode(errors="replace"), keep_blank_values=True).items()}
         if self.path == "/login":
@@ -1175,9 +1280,14 @@ class Handler(BaseHTTPRequestHandler):
             actions.reset()
             actions.reset_copy()
             done, page = "saved", "/settings"
-        elif self.path in ("/tls/regenerate", "/tls/bypass/remove"):
+        elif self.path in ("/tls/regenerate", "/tls/bypass/remove", "/tls/own-ca/remove"):
             if self.path == "/tls/regenerate":
-                error, done = store.regenerate_ca(), "ca-regenerated"
+                done = "ca-regenerated"
+                # A page opened before an upload still has the button. The proxy would keep the
+                # request, and replace the generated CA when the owner goes back to it.
+                error = "Regenerate does not apply to your own CA." if store.tls_status().get("ca_own") is True else store.regenerate_ca()
+            elif self.path == "/tls/own-ca/remove":
+                error, done = store.remove_own_ca(), "ca-removed"
             else:
                 device, _, name = form.get("entry", "").partition(" ")
                 try:
@@ -1191,7 +1301,7 @@ class Handler(BaseHTTPRequestHandler):
             if error:
                 self.reply(settings_page(host, "", error, "https"))
                 return
-            store.activity_add("system", "Regenerated the HTTPS inspection CA" if self.path == "/tls/regenerate" else "Removed an automatic HTTPS bypass")
+            store.activity_add("system", {"/tls/regenerate": "Regenerated the HTTPS inspection CA", "/tls/own-ca/remove": "Asked the proxy to stop using the own CA"}.get(self.path, "Removed an automatic HTTPS bypass"))
             self.send_response(303)
             self.send_header("Location", f"/settings?ok={done}&tab=https")
             self.end_headers()

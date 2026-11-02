@@ -216,6 +216,44 @@ def regenerate_ca():
     return write_tls_control()
 
 
+def upload_ca(chain, key):
+    """Leave an uploaded CA for the TLS proxy. Return an error message, or None when it worked.
+
+    Only the proxy can check it, and it deletes both files either way. The key goes first and the
+    certificate last, each through a rename, so the proxy sees a pair only when it is whole.
+    """
+    paths = [os.path.join(TLS_DIR, "incoming", name) for name in ("own-ca.key", "own-ca.pem")]
+    with lock:
+        try:
+            for path, data in zip(paths, (key, chain)):
+                with open(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as target:
+                    target.write(data)
+                os.replace(path + ".tmp", path)
+        except OSError as failure:
+            print(f"[mikrokat] cannot store the uploaded CA: {failure}", flush=True)
+            for path in paths + [path + ".tmp" for path in paths]:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return "The upload could not be stored, so nothing has changed."
+    return None
+
+
+def remove_own_ca():
+    """Ask the TLS proxy to stop using the uploaded CA. Return an error message, or None when it worked.
+
+    A file, because an entry in the control file would stay there and take the next upload too.
+    """
+    try:
+        with open(os.open(os.path.join(TLS_DIR, "incoming", "remove-own-ca"), os.O_WRONLY | os.O_CREAT, 0o600)):
+            pass
+    except OSError as failure:
+        print(f"[mikrokat] cannot ask the proxy to remove the CA: {failure}", flush=True)
+        return "The request could not be stored, so nothing has changed."
+    return None
+
+
 def remove_auto_bypass(device, name):
     """Ask the TLS proxy to drop one automatic bypass. Only the last 50 requests are kept."""
     with lock:
