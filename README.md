@@ -174,7 +174,7 @@ It is off by default. The proxy only reads: it never changes traffic, and blocki
 Suricata sees nothing inside these. The Numbers card on the HTTPS inspection tab counts by reason the connections that reach the proxy. Programs that do not use the proxy, QUIC, and bytes past the first 1 MiB have no counter.
 
 - Devices that are not on your list, and programs on a listed device that do not use the proxy.
-- Names on the bypass list: the banks, payment, health and update services in [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt), and the names you add on the tab. The list is a starting point, not a complete one: it names a few institutions, in Italy and Switzerland, plus PayPal. Any other bank, payment or health site is decrypted unless you add it first.
+- Names on the bypass list. The **Never inspect these names** field on the tab opens already filled in with the defaults from [`tlsproxy/bypass.txt`](tlsproxy/bypass.txt): banks and payments, health and public services, update services and Google. The proxy writes them to `data/tls/state/bypass-defaults.txt` for the page to show. Edit the field freely: the first time you save, what is in it becomes your whole list, so removing a default really removes it, and the defaults never come back by themselves. `cloudflare-ech.com` always stays skipped, because Encrypted Client Hello needs it. The list is a starting point, not a complete one: it names a few institutions, in Italy and Switzerland, plus PayPal. Any other bank, payment or health site is decrypted unless you add it first.
 - Apps that refuse the Mikrokat certificate, such as those with a pinned certificate. After two refusals within 10 minutes, that device and that exact name are relayed untouched for 24 hours. A device that finished a handshake with the Mikrokat certificate for a name in the last 24 hours does not earn this for that name.
 - Sites that ask for a client certificate, and sites with a bad certificate.
 - Everything, once the CA has expired. Connections keep working and are counted as `ca_expired`. Press **Regenerate the CA** before that, or upload a new CA if you use your own.
@@ -197,13 +197,29 @@ To check it, open a site in that profile and look at its certificate: the issuer
 
 If you already run a private CA and your devices trust it, the proxy can sign with that one instead of the CA it generates.
 
-Make a dedicated intermediate CA for this, with a short life, and never upload your root. The key sits on this host, so anyone who gets in can impersonate any site to every device that trusts that CA.
+Make a dedicated intermediate CA for this, with a short life, and never upload your root.
+
+**Recommended: create the key on the proxy.** The key never crosses the network, and your root key never leaves your machine. Signing never happens on the page.
+
+1. On the HTTPS inspection tab, under **Create a key here**, set the CA name (default `Mikrokat Inspection CA`) and press **Create request**. A new request replaces an older pending one.
+2. After a few seconds, reload the tab. Download the request (`mikrokat-ca.csr`) and the extensions (`mikrokat-ca.ext`), and sign them with your root, on your machine:
+
+   ```
+   openssl x509 -req -in mikrokat-ca.csr -CA root.crt -CAkey root.key -CAcreateserial -days 365 -sha256 -extfile mikrokat-ca.ext -out mikrokat-ca.pem
+   ```
+
+3. Choose `mikrokat-ca.pem` under **Upload signed certificate** and press the button. A chain is fine: the signed CA first, then the root if you like. No key is needed, because the proxy has it.
+4. Reload after a few seconds. The tab shows the CA in use, or why the certificate was refused. A certificate that does not fit the pending key, or that fails any check of an upload, leaves the pending request and the CA in use as they were. **Cancel request** deletes the pending key.
+
+The pending key is `data/tls/private/own-ca-request.key`, mode 600. Only the request, which holds no secret, is in `data/tls/state`.
+
+**Or upload a certificate and key you already have.** The form under that heading takes both files.
 
 1. Prepare two PEM files. The chain holds the CA that signs first, then any intermediates, up to the root if you like. The key is RSA, ECDSA or Ed25519, in PKCS#8, PKCS#1 or SEC1, without a passphrase. To remove one, use `openssl pkey -in key.pem -out plain.pem`.
-2. On the HTTPS inspection tab, under **Your own CA**, choose both files and press **Upload**.
+2. Choose both files and press **Upload**.
 3. Reload the page after a few seconds. The tab shows the CA in use, or why the upload was refused. A refused upload leaves the CA in use untouched.
 
-- **The key can cross your network in the clear.** The pages are plain HTTP unless they are behind HTTPS, so upload only from a trusted network.
+- **With the two-file upload, the key can cross your network in the clear.** The pages are plain HTTP unless they are behind HTTPS, so upload only from a trusted network.
 - **Where the key goes.** The app leaves both files in `data/tls/incoming`. The proxy checks them, moves a valid pair to `data/tls/private` and deletes both from `incoming`, whether they were valid or not. If the proxy is not running, they wait there until it starts.
 - **Devices must already trust it.** Mikrokat changes nothing on them. **Download the CA certificate** gives you the chain you uploaded.
 - **A CA with name constraints works only for those names.** For any other name the device refuses the certificate, and the automatic bypass then relays that name untouched.
@@ -224,6 +240,8 @@ Other programs on a listed device can use the same SOCKS5 proxy on port 1080, if
 - **Apps must be configured.** Nothing on the router changes, so a program is inspected only if it is set to use the proxy and trusts the CA.
 - **A program can ignore SOCKS.** A proxy setting is a request, not a control. Do not count on this to catch software that wants to hide.
 - **Only decrypted alerts show the real device.** Connections the proxy relays, and its own connections to sites, appear in Suricata as the Mikrokat host.
+- **Bot protection can object.** Sites with bot protection show a CAPTCHA or an "unusual traffic" page to an inspected device, because they see the proxy's TLS fingerprint and HTTP/1.1 instead of the browser's. Google is skipped by default, as corporate proxies do. Other sites with bot protection, such as those behind Cloudflare, go in your own skip list.
+- **A device behind a VPN or overlay shows as its gateway.** A device that reaches Mikrokat through a VPN or an overlay network such as NetBird appears with the address of that gateway, not its LAN address. Put the gateway's address in Devices. Every client behind that gateway then counts as the same device, and alerts show the gateway.
 - **A site can choose not to be inspected.** Like a port other than 443 or an IPv6 address, a hostile site can stay out of reach: if it resets the proxy's connection, or shows the proxy a certificate that fails, the proxy relays the browser on a fresh connection, and the site can answer that one normally.
 - **Only the chain, name and dates are checked.** Revocation and Certificate Transparency are lost for inspected sites, because the browser sees only the Mikrokat certificate. A site with a revoked certificate looks fine.
 - **URLs are written.** For every inspected request Suricata stores the host, URL, content type and user agent. An alert also stores the referrer, redirect target, method, status and length. A password or token in any of those URLs is therefore written. Passwords, cookies and bodies sent in headers or in the body are not written to disk, and `tests/e2e/run.sh` checks that.

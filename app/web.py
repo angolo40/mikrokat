@@ -649,6 +649,7 @@ GUIDE = """<aside class="guide">
 <p>Every block shows on the Blocked page, where you can remove it.</p>
 <h2>7. Look inside HTTPS (optional)</h2>
 <p>On the HTTPS inspection tab, add the devices you own and turn it on. In one Firefox profile on that device, import the CA from that tab under Settings, Privacy and Security, Certificates, and set the proxy to Automatic proxy configuration URL http://{ip}:8088/tls.pac. Tick Proxy DNS when using SOCKS v5, so the proxy looks up each name.</p>
+<p>If you run your own root CA, the safest way is Create a key here on that tab: the proxy makes the key, you download the request and sign it on your machine with the command shown, and you upload the certificate. The key never crosses the network and your root key never leaves your machine.</p>
 <p>Only that profile is inspected. Other browsers, apps and devices stay encrypted end to end, and so does any site you add to the skip list. Sites that pin their certificate are skipped on their own for 24 hours.</p>
 <p>Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
 </aside>"""
@@ -747,6 +748,30 @@ def own_ca_card(stats):
             f'<div class="actions"><button form="own-ca"{off}>Upload</button></div>{stop}</section>')
 
 
+def bypass_field():
+    """The names for the skip list, a flag for the form and the hint under it.
+
+    Until a save, the field opens with the defaults the proxy wrote, plus the owner's names. After one it is the
+    owner's list, whole. Without the file the page shows the current list, and the form says it is not the whole one.
+    """
+    own = list(store.settings["tls_bypass"])
+    always = "cloudflare-ech.com is always skipped, whatever is here: it is what makes Encrypted Client Hello work."
+    try:
+        with open(os.path.join(store.TLS_DIR, "state", "bypass-defaults.txt"), encoding="utf-8") as source:
+            defaults = [line.strip() for line in source if line.strip()][:500]
+    except (OSError, UnicodeDecodeError):
+        defaults = None
+    hint = ("One name per line, for example bank.example.com or *.example.com. The list is already filled in with the defaults: banks, health and public services, "
+            f"update services and Google. Add your bank if it is missing. Anything not on it is decrypted. {always}")
+    if store.settings["tls_bypass_saved"]:
+        return own, "", hint
+    if defaults is None:
+        return own, '<input type="hidden" name="tls_bypass_partial" value="1">', (
+            "One name per line. The proxy has not written its default list yet, so only your own names are shown, and saving keeps the defaults on. "
+            f"Reload this page in a few seconds to see them. {always}")
+    return defaults + [name for name in own if name not in defaults], "", hint
+
+
 def https_card(host, switch, field):
     """The HTTPS inspection tab. Names in stats.json came from client traffic, so everything from it is escaped."""
     s = store.settings
@@ -758,17 +783,19 @@ def https_card(host, switch, field):
     names = "".join(f"<li>{esc(ip)} {esc(str(name))}</li>" for ip, name in known_names)
     known = f'<details class="howto"><summary>Known devices ({len(known_names)})</summary><ul class="scroll">{names}</ul></details>' if names else ""
     pac = f"http://{esc(host)}/tls.pac"
+    bypass_names, bypass_flag, bypass_hint = bypass_field()
     warning = ('<p class="note error">Mikrokat will read the pages of the devices you list. The URLs of inspected traffic stay in EVE for as long as Keep logs for says, and in EveBox for 7 days whatever is set. '
                'Inspect only your own devices, or with the consent of the person using them.</p>'
-               '<p class="note">The built-in list names only a few banks, health and public services. Any other bank, payment or health site is decrypted unless you add it below first.</p>')
+               '<p class="note">The list under Never inspect these names starts with a few banks, health and public services, and update services. Any other bank, payment or health site is decrypted unless you add it there first.</p>')
     options = (switch("tls_enabled", "Inspect HTTPS from these devices", s["tls_enabled"]) + '<div class="reveal">'
                + switch("tls_socks", "Offer the SOCKS entry point", s["tls_socks"])
                + '<div class="fields">' + field("SOCKS port", "tls_socks_port", s["tls_socks_port"], "number", "1024 to 65535. Not 8088, 5636, 37008 or 8443.") + '</div>'
                f'<p class="hint">Automatic proxy configuration address: {pac}</p>'
                f'<label class="field"><span>Devices</span><textarea name="tls_devices" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_devices"]))}</textarea>'
                f'<span class="hint">One IP address per line, at most 64. Only these devices are inspected.</span></label>{known}'
-               f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="4">{esc(chr(10).join(s["tls_bypass"]))}</textarea>'
-               f'<span class="hint">One name per line, for example bank.example.com or *.example.com. Banks and health sites belong here.</span></label>'
+               f'<label class="field"><span>Never inspect these names</span><textarea name="tls_bypass" spellcheck="false" rows="8">{esc(chr(10).join(bypass_names))}</textarea>{bypass_flag}'
+               f'<span class="hint">{bypass_hint}</span></label>'
+
                f'<div class="actions"><a href="/tls/ca.pem">Download the CA certificate</a>{regenerate}</div>')
     rows = "".join(
         f'<tr><td>{esc(str(e.get("device", "")))}</td><td>{esc(str(e.get("name", "")))}</td><td>{esc(time.strftime("%Y-%m-%d %H:%M", time.localtime(e["until"]))) if isinstance(e.get("until"), (int, float)) else ""}</td>'

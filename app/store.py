@@ -49,6 +49,7 @@ settings = {
     "tls_socks_port": 1080,
     "tls_devices": [],
     "tls_bypass": [],
+    "tls_bypass_saved": False,  # True once a save made the list on the page the whole list
     "tls_ca_generation": 0,
     "tls_ca_request": 0,
     "tls_ca_request_name": "Mikrokat Inspection CA",
@@ -183,6 +184,7 @@ def write_tls_control():
     """
     config = {"enabled": settings["tls_enabled"], "socks": settings["tls_socks"], "socks_port": settings["tls_socks_port"],
               "devices": list(settings["tls_devices"]), "bypass": list(settings["tls_bypass"]),
+              "bypass_custom": settings["tls_bypass_saved"],
               "ca_generation": settings["tls_ca_generation"], "auto_remove": list(settings["tls_auto_remove"]),
               "ca_request": settings["tls_ca_request"], "ca_request_name": settings["tls_ca_request_name"],
               "ca_request_cancel": settings["tls_ca_request_cancel"]}
@@ -569,7 +571,10 @@ def save_settings(form):
                         ai_model=ai_model, ai_key=form.get("ai_key", "") or settings["ai_key"], ai_language=form.get("ai_language", "").strip()[:30] or "English")
         settings.update(oidc_enabled=oidc, oidc_issuer=oidc_issuer, oidc_client_id=oidc_client, oidc_client_secret=oidc_secret, oidc_group=oidc_group,
                         oidc_label=form.get("oidc_label", "").strip()[:30] or "SSO", oidc_scopes=form.get("oidc_scopes", "").strip() or "openid profile email")
-        settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices, tls_bypass=tls_bypass)
+        settings.update(tls_enabled=tls, tls_socks=bool(form.get("tls_socks")), tls_socks_port=tls_port, tls_devices=tls_devices)
+        if "tls_bypass" in form:
+            # The field holds the whole list, defaults included, unless the page could not read them.
+            settings.update(tls_bypass=tls_bypass, tls_bypass_saved=settings["tls_bypass_saved"] or not form.get("tls_bypass_partial"))
         if new_password:
             settings["password_hash"] = hash_password(new_password)
         write_json(SETTINGS_FILE, settings)

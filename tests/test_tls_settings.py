@@ -50,7 +50,7 @@ class Base(unittest.TestCase):
         os.makedirs(os.path.join(store.TLS_DIR, "incoming"))
         store.settings.clear()
         store.settings.update(copy.deepcopy(self.saved))
-        store.settings.update(tls_enabled=False, tls_socks=True, tls_socks_port=1080, tls_devices=[], tls_bypass=[], tls_ca_generation=0, tls_auto_remove=[], tls_ca_request=0, tls_ca_request_name="Mikrokat Inspection CA", tls_ca_request_cancel=0)
+        store.settings.update(tls_enabled=False, tls_socks=True, tls_socks_port=1080, tls_devices=[], tls_bypass=[], tls_ca_generation=0, tls_auto_remove=[], tls_ca_request=0, tls_ca_request_name="Mikrokat Inspection CA", tls_ca_request_cancel=0, tls_bypass_saved=False)
 
     def tearDown(self):
         store.settings.clear()
@@ -87,7 +87,7 @@ class TlsSettings(Base):
         self.assertIsNone(error)
         self.assertEqual(self.control(), {"enabled": True, "socks": True, "socks_port": 1080, "devices": ["10.0.0.5", "fe80::1"],
                                           "bypass": ["bank.example.com", "*.pay.example"], "ca_generation": 0, "auto_remove": [],
-                                          "ca_request": 0, "ca_request_name": "Mikrokat Inspection CA", "ca_request_cancel": 0})
+                                          "ca_request": 0, "ca_request_name": "Mikrokat Inspection CA", "ca_request_cancel": 0, "bypass_custom": True})
 
     def test_status_survives_bad_json(self):
         self.assertEqual(store.tls_status(), {})
@@ -192,6 +192,89 @@ class Page(Base):
 
 def many_names(count):
     return {f"10.0.1.{n}": f"host-{n:02d}" for n in range(count)}
+
+
+class BypassField(Base):
+    def defaults(self, text="paypal.com\nubs.com\ngoogle.com\n"):
+        with open(os.path.join(store.TLS_DIR, "state", "bypass-defaults.txt"), "w") as target:
+            target.write(text)
+
+    def field(self):
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        match = re.search(r'<textarea name="tls_bypass"[^>]*>(.*?)</textarea>', page, re.S)
+        self.assertTrue(match)
+        return html.unescape(match.group(1)).split("\n"), page
+
+    def test_opens_prefilled_with_the_defaults(self):
+        self.defaults()
+        lines, page = self.field()
+        self.assertEqual(lines, ["paypal.com", "ubs.com", "google.com"])
+        self.assertIn("already filled in with the defaults", page)
+        self.assertIn("cloudflare-ech.com", page)
+        self.assertNotIn("tls_bypass_partial", page)
+
+    def test_own_names_join_the_defaults_until_the_first_save(self):
+        self.defaults()
+        store.settings["tls_bypass"] = ["mybank.example", "ubs.com"]
+        self.assertEqual(self.field()[0], ["paypal.com", "ubs.com", "google.com", "mybank.example"])
+
+    def test_missing_file_shows_the_current_list_and_a_note(self):
+        store.settings["tls_bypass"] = ["mybank.example"]
+        lines, page = self.field()
+        self.assertEqual(lines, ["mybank.example"])
+        self.assertIn("has not written its default list", page)
+        self.assertIn('name="tls_bypass_partial"', page)
+
+    def test_a_save_makes_the_field_the_list(self):
+        self.assertIs(store.settings["tls_bypass_saved"], False)
+        self.assertIsNone(store.save_settings(full_form(tls_bypass="paypal.com\nmybank.example")))
+        self.assertIs(store.settings["tls_bypass_saved"], True)
+        self.assertEqual(store.settings["tls_bypass"], ["paypal.com", "mybank.example"])
+        self.assertIs(self.control()["bypass_custom"], True)
+        self.defaults()
+        self.assertEqual(self.field()[0], ["paypal.com", "mybank.example"])
+
+    def test_a_save_from_another_tab_keeps_the_list(self):
+        self.defaults()
+        lines, _ = self.field()
+        # The form carries the whole page, so a change on the Data tab sends the field as it was shown.
+        self.assertIsNone(store.save_settings(full_form(retention_days="14", tls_bypass="\n".join(lines))))
+        self.assertEqual(store.settings["tls_bypass"], ["paypal.com", "ubs.com", "google.com"])
+        self.assertEqual(self.field()[0], ["paypal.com", "ubs.com", "google.com"])
+        self.assertIsNone(store.save_settings(full_form(retention_days="30", tls_bypass="\n".join(lines))))
+        self.assertEqual(store.settings["tls_bypass"], ["paypal.com", "ubs.com", "google.com"])
+
+    def test_a_default_can_be_removed(self):
+        self.defaults()
+        self.assertIsNone(store.save_settings(full_form(tls_bypass="ubs.com")))
+        self.assertEqual(self.field()[0], ["ubs.com"])
+
+    def test_an_incomplete_field_does_not_turn_the_defaults_off(self):
+        self.assertIsNone(store.save_settings(full_form(tls_bypass="mybank.example", tls_bypass_partial="1")))
+        self.assertEqual(store.settings["tls_bypass"], ["mybank.example"])
+        self.assertIs(store.settings["tls_bypass_saved"], False)
+        self.assertIs(self.control()["bypass_custom"], False)
+
+    def test_a_form_without_the_field_keeps_things(self):
+        store.settings.update(tls_bypass=["keep.example"], tls_bypass_saved=True)
+        form = full_form()
+        del form["tls_bypass"]
+        self.assertIsNone(store.save_settings(form))
+        self.assertEqual(store.settings["tls_bypass"], ["keep.example"])
+
+    def test_the_limit_of_500_stays(self):
+        self.assertTrue(store.save_settings(full_form(tls_bypass="\n".join(f"h{n}.example" for n in range(501)))))
+        self.assertIsNone(store.save_settings(full_form(tls_bypass="\n".join(f"h{n}.example" for n in range(500)))))
+
+    def test_defaults_file_is_escaped(self):
+        self.defaults("<script>alert(1)</script>\n")
+        page = web.settings_page("mikrokat.lan:8088", tab="https")
+        self.assertNotIn("<script>alert(1)", page)
+
+    def test_the_warning_no_longer_says_the_built_in_list_is_short(self):
+        _, page = self.field()
+        self.assertNotIn("The built-in list names only", page)
+        self.assertIn("Any other bank, payment or health site is decrypted", page)
 
 
 class KnownDevices(Base):
