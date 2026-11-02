@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end test of HTTPS inspection, for a disposable host with the stack running.
 # Run it as root. It recreates tlsproxy, restarts mikrokat and applies the rules, and it leaves the
-# feature off and its own rules gone, also when a check fails. It is safe to run again.
+# feature off and its own rules and CA gone, also when a check fails. It is safe to run again.
 # It needs python3, curl, openssl and iproute2 on the host.
 #
 #   tests/e2e/run.sh           runs the checks and prints PASS, or the check that failed
@@ -13,6 +13,8 @@ SERVER=198.51.100.7
 SOCKS=127.0.0.1:1080
 APP=http://127.0.0.1:8088
 TEST_CA="Mikrokat E2E test CA"
+OWN_ROOT="Mikrokat E2E own root"
+OWN_CA="Mikrokat E2E own CA"
 ALARM="HTTPS inspection has stopped"
 PORT_ALARM="The HTTPS inspection port is closed"
 COOKIE=e2e-cookie-value
@@ -171,6 +173,59 @@ listening_says() {
   [ "$(counter listening)" = "$1" ]
 }
 
+own_says() {
+  [ "$(counter ca_own)" = "$1" ]
+}
+
+import_error_says() {
+  counter ca_import_error | grep -qF "$1"
+}
+
+incoming_empty() {
+  [ -z "$(ls -A data/tls/incoming 2>/dev/null)" ]
+}
+
+tab() {
+  curl -s -b "$E2E_WORK/cookies" "$APP/settings?tab=https"
+}
+
+form_token() {
+  tab | grep -o 'name="token" value="[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+# upload_ca <chain> <key>: what the Upload button sends. Prints where the page goes next.
+upload_ca() {
+  curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" -F "token=$(form_token)" -F "chain=@$1" -F "key=@$2" "$APP/tls/own-ca"
+}
+
+# fetch_signed_by <CA file> <issuer>: a client that trusts only that file gets a leaf from that issuer.
+fetch_signed_by() {
+  local body
+  body=$(through_proxy test.example.net -v --cacert "$1" https://test.example.net/mikrokat-e2e 2>"$E2E_WORK/curl.log")
+  [ "$body" = "mikrokat-e2e-ok" ] || fail "no body: $(tail -1 "$E2E_WORK/curl.log")"
+  grep -q "issuer: CN=$2" "$E2E_WORK/curl.log" || fail "the leaf is not from $2: $(grep issuer: "$E2E_WORK/curl.log")"
+}
+
+# A root that only the test client trusts, and the intermediate the proxy gets.
+make_own_ca() {
+  (
+    cd "$E2E_WORK" || exit 1
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=$OWN_ROOT" \
+      -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign -keyout own-root.key -out own-root.pem &&
+      openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=$OWN_CA" -keyout own.key -out own.csr &&
+      openssl x509 -req -in own.csr -CA own-root.pem -CAkey own-root.key -CAcreateserial -days 2 \
+        -extfile <(printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n') -out own.pem &&
+      cat own.pem own-root.pem >own-chain.pem &&
+      openssl genpkey -algorithm ed25519 -out other.key
+  ) 2>/dev/null || fail "no private CA"
+}
+
+# A request, not a delete: the proxy also puts ca.pem back. What a failed run left waiting goes too.
+drop_own_ca() {
+  rm -f data/tls/incoming/own-ca.* 2>/dev/null
+  touch data/tls/incoming/remove-own-ca 2>/dev/null
+}
+
 # The counters along the path of a copy, from the proxy to Suricata, one name=value per line.
 frames() {
   local counters
@@ -261,6 +316,55 @@ measure() {
 
   counted $((FETCHES * BURST)) full_queue
   echo "Full queue: $mbps Mbps, peak $(peak_mb) MB, $(ram) after. Frames sent $delta_sent, seen by tzsp $delta_tzsp, lost $delta_udp_lost, copies_dropped $delta_dropped"
+}
+
+own_ca() {
+  check "Own CA"
+  make_own_ca
+  local next page inspected key_line
+  page=$(tab)
+  grep -q '<form id="own-ca" method="post" action="/tls/own-ca" enctype="multipart/form-data">' <<<"$page" || fail "no upload form on the tab"
+  grep -q 'type="file" name="chain" form="own-ca"' <<<"$page" || fail "no field for the chain"
+  grep -q 'type="file" name="key" form="own-ca"' <<<"$page" || fail "no field for the key"
+  next=$(upload_ca "$E2E_WORK/own-chain.pem" "$E2E_WORK/own.key")
+  [ "$next" = "$APP/settings?ok=ca-uploaded&tab=https" ] || fail "the upload went to '$next'"
+  wait_for 15 own_says true || fail "the proxy did not take it: $(counter ca_import_error)"
+  incoming_empty || fail "data/tls/incoming still holds $(ls -A data/tls/incoming)"
+  [ "$(stat -c %a data/tls/private/own-ca.key)" = 600 ] || fail "own-ca.key has mode $(stat -c %a data/tls/private/own-ca.key)"
+  fetch_signed_by "$E2E_WORK/own-root.pem" "$OWN_CA"
+  [ "$(counter ca_chain)" = 2 ] || fail "ca_chain is $(counter ca_chain)"
+  curl -s -b "$E2E_WORK/cookies" "$APP/tls/ca.pem" | cmp -s - "$E2E_WORK/own-chain.pem" || fail "the download is not the chain"
+  page=$(tab)
+  grep -q "CN=$OWN_CA" <<<"$page" || fail "the tab does not show the subject"
+  grep -q 'formaction="/tls/regenerate"' <<<"$page" && fail "the tab still offers Regenerate"
+  grep -q 'formaction="/tls/own-ca/remove"' <<<"$page" || fail "the tab does not offer Stop using my CA"
+
+  check "Broken upload"
+  inspected=$(counter inspected)
+  upload_ca "$E2E_WORK/own-chain.pem" "$E2E_WORK/other.key" >/dev/null
+  wait_for 15 import_error_says "does not match the first certificate" || fail "the reason is '$(counter ca_import_error)'"
+  incoming_empty || fail "data/tls/incoming still holds $(ls -A data/tls/incoming)"
+  tab | grep -q "does not match the first certificate" || fail "the tab does not show the reason"
+  own_says true || fail "the CA in use changed"
+  fetch_signed_by "$E2E_WORK/own-root.pem" "$OWN_CA"
+  wait_for 15 counter_above inspected "$inspected" || fail "inspected did not grow"
+
+  check "Stop using my CA"
+  next=$(curl -sS -o /dev/null -w '%{redirect_url}' -b "$E2E_WORK/cookies" --data-urlencode "token=$(form_token)" "$APP/tls/own-ca/remove")
+  [ "$next" = "$APP/settings?ok=ca-removed&tab=https" ] || fail "the button went to '$next'"
+  wait_for 15 own_says false || fail "ca_own stayed true"
+  incoming_empty || fail "data/tls/incoming still holds $(ls -A data/tls/incoming)"
+  [ ! -e data/tls/private/own-ca.key ] && [ ! -e data/tls/private/own-ca.pem ] || fail "the own files stayed"
+  cmp -s data/tls/state/ca.pem "$E2E_WORK/ca.pem" || fail "this is not the generated CA of before"
+  fetch_signed_by "$E2E_WORK/ca.pem" "Mikrokat local CA"
+  tab | grep -q 'formaction="/tls/regenerate"' || fail "the tab does not offer Regenerate again"
+  # By this point no copy may be left, and no log may ever have held it.
+  key_line=$(sed -n 2p "$E2E_WORK/own.key")
+  grep -rlF -e "$key_line" data/ >"$E2E_WORK/found"
+  [ ! -s "$E2E_WORK/found" ] || fail "the key is still in $(tr '\n' ' ' <"$E2E_WORK/found")"
+  docker logs mikrokat-tlsproxy 2>&1 </dev/null | grep -qF -e "$key_line" -e "PRIVATE KEY" && fail "the proxy logged the key"
+  docker logs mikrokat-app 2>&1 </dev/null | grep -qF -e "$key_line" -e "PRIVATE KEY" && fail "the app logged the key"
+  return 0
 }
 
 checks() {
@@ -370,6 +474,8 @@ checks() {
   [ "$code" != 0 ] || fail "the connection was served"
   wait_for 15 counter_above refused "$before" || fail "refused did not grow"
 
+  own_ca
+
   check "Switching off"
   feature off
   wait_for 30 control_says false || fail "the control file still says on"
@@ -414,8 +520,10 @@ finish() {
   ip route del local "$SERVER/32" dev lo 2>/dev/null
   remove_rules
   feature remove
+  drop_own_ca
   # Without the override, so the proxy trusts the public roots again and forgets the automatic bypass.
   docker compose up -d --force-recreate --no-deps tlsproxy </dev/null >/dev/null 2>&1
+  wait_for 15 incoming_empty || echo "warning: data/tls/incoming is not empty"
   apply_rules || echo "warning: the rules could not be applied, run tools/update-rules.sh"
   [ -z "$E2E_WORK" ] || rm -rf "$E2E_WORK"
   echo "$RESULT"
@@ -426,6 +534,7 @@ setup() {
   # What a killed run may have left.
   ip route del local "$SERVER/32" dev lo 2>/dev/null
   remove_rules
+  drop_own_ca
 
   E2E_WORK=$(mktemp -d)
   # This suite runs again after every review, so a PASS must be for the code in this folder.
