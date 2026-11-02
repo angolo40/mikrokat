@@ -42,6 +42,7 @@ services:
       - ./data/tls/control:/tls/control:ro
       - ./data/tls/state:/tls/state
       - ./data/tls/private:/tls/private
+      - ./data/tls/incoming:/tls/incoming
 
   suricata:
     image: jasonish/suricata:8.0.8
@@ -80,6 +81,7 @@ services:
       - ./data/app:/var/lib/mikrokat
       - ./data/tls/control:/var/lib/mikrokat-tls/control
       - ./data/tls/state:/var/lib/mikrokat-tls/state:ro
+      - ./data/tls/incoming:/var/lib/mikrokat-tls/incoming
       - ./data/lib:/var/lib/suricata:ro
       - ./rules:/rules
       - suricata-run:/var/run/suricata
