@@ -61,7 +61,7 @@ NOTICES = {
     "ca-requested": "The proxy is making the key and the request. Reload this page in a few seconds, then download the request.",
     "ca-request-cancelled": "The pending key and request are being deleted.",
     "ca-removed": "The proxy goes back to the generated CA within a few seconds. Devices now need that one: download it from this tab and import it.",
-    "log-deleted": "The connection log is deleted, and the Connections page starts empty.",
+    "log-deleted": "The connection log is deleted, and the HTTPS proxy page starts empty.",
 }
 CA_EXTENSIONS = """basicConstraints = critical, CA:TRUE, pathlen:0
 keyUsage = critical, keyCertSign, cRLSign
@@ -303,17 +303,59 @@ select { width: 100%; }
 .guide h2 { font-size: 14px; margin: 14px 0 4px; }
 .guide p { margin: 4px 0; color: var(--muted); }
 .guide pre { background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; }
-.login-page main { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
-.login { width: 100%; max-width: 380px; margin: 0; padding: 28px 28px 30px; }
-.login h1 { margin: 0; font-size: 26px; }
-.login .tagline { margin: 2px 0 20px; color: var(--muted); font-size: 14px; }
-.login form { display: flex; flex-direction: column; gap: 14px; }
-.login input { width: 100%; }
-.login button { width: 100%; margin-top: 6px; padding: 10px 14px; }
-.sso { display: block; text-align: center; padding: 10px 14px; border-radius: 8px; background: var(--accent); color: var(--accent-text); font-weight: 500; }
-.sso:hover { text-decoration: none; }
-.or { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--muted); font-size: 13px; }
+.login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); background: var(--surface); }
+.brand { position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; gap: 28px; padding: 40px 48px; color: #e8eef7;
+  background: radial-gradient(120% 80% at 0% 0%, #1d4f8f 0%, transparent 55%), radial-gradient(90% 70% at 100% 100%, #0f5a4a 0%, transparent 60%), linear-gradient(160deg, #0a1322, #0d1b30 60%, #0a1626); }
+.brand::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+  background-image: linear-gradient(rgb(255 255 255 / 4%) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 4%) 1px, transparent 1px); background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse at 40% 45%, #000 30%, transparent 75%); -webkit-mask-image: radial-gradient(ellipse at 40% 45%, #000 30%, transparent 75%); }
+.brand > * { position: relative; }
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo svg { width: 42px; height: 42px; flex: none; filter: drop-shadow(0 4px 14px rgb(57 135 229 / 45%)); }
+.logo h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; color: #fff; }
+.logo p { margin: 0; font-size: 13px; color: #9fb3cc; }
+.flow { width: 100%; max-width: 600px; height: auto; align-self: center; }
+.flow .lane { stroke: rgb(255 255 255 / 9%); stroke-width: 1.5; stroke-dasharray: 3 5; }
+.flow .node { fill: #13233b; stroke: #3b5a80; stroke-width: 1.5; }
+.flow .lan { fill: #0f2f2a; stroke: #4ec08b; stroke-width: 1.5; }
+.flow .label { fill: #7f93ad; font: 600 10px system-ui, sans-serif; letter-spacing: .12em; }
+.flow .gate { stroke: url(#gate); stroke-width: 3; stroke-linecap: round; animation: gate 3.2s ease-in-out infinite; }
+.flow .pkt { fill: #cfe0f5; animation: pass 4.6s linear infinite both; }
+.flow .pkt.bad { animation-name: stop; }
+.flow .p2 { animation-duration: 5.4s; animation-delay: -1.7s; } .flow .p3 { animation-duration: 4.1s; animation-delay: -3s; }
+.flow .p4 { animation-duration: 6s; animation-delay: -.6s; } .flow .p5 { animation-duration: 5s; animation-delay: -2.4s; } .flow .p6 { animation-duration: 4.8s; animation-delay: -4s; }
+@keyframes pass { 0% { transform: translateX(0); opacity: 0; } 6% { opacity: 1; } 64% { fill: #cfe0f5; } 68% { fill: #4ec08b; } 94% { opacity: 1; } 100% { transform: translateX(316px); opacity: 0; fill: #4ec08b; } }
+@keyframes stop { 0% { transform: translateX(0); opacity: 0; } 6% { opacity: 1; } 60% { transform: translateX(196px); fill: #cfe0f5; }
+  64% { transform: translateX(196px); fill: #ff6b5e; } 88% { transform: translateX(196px); opacity: 1; fill: #ff6b5e; } 100% { transform: translateX(196px); opacity: 0; fill: #ff6b5e; } }
+@keyframes gate { 0%, 100% { opacity: .65; } 50% { opacity: 1; } }
+.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 14px; color: #c3d0e0; }
+.points li { display: flex; align-items: center; gap: 10px; }
+.points li::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #4ec08b; box-shadow: 0 0 0 4px rgb(78 192 139 / 15%); flex: none; }
+.login-page .signin-main { max-width: none; margin: 0; padding: 0; display: grid; }
+.signin { display: grid; place-items: center; padding: 40px 24px; }
+.signin-box { width: 100%; max-width: 360px; }
+.signin-box h2 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
+.signin-box .sub { margin: 4px 0 26px; color: var(--muted); font-size: 14px; }
+.signin-box form { display: flex; flex-direction: column; gap: 16px; }
+.signin-box .field > span { font-size: 13px; font-weight: 600; }
+.signin-box input { width: 100%; padding: 11px 13px; border-radius: 10px; transition: border-color .15s, box-shadow .15s; }
+.signin-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); outline: none; }
+.secret { position: relative; display: block; } .secret input { padding-right: 46px; }
+.reveal { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border-radius: 8px; background: transparent; color: var(--muted); }
+.reveal:hover { background: var(--raised); color: var(--text); } .reveal svg { width: 18px; height: 18px; } .reveal .shut, .reveal[aria-pressed=true] .open { display: none; } .reveal[aria-pressed=true] .shut { display: block; }
+.go { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 6px; padding: 12px 14px; border-radius: 10px; font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), #1f5fb0); box-shadow: 0 6px 18px -6px rgb(42 120 214 / 60%); transition: transform .15s, box-shadow .15s; }
+.go:hover { transform: translateY(-1px); box-shadow: 0 10px 22px -8px rgb(42 120 214 / 70%); } .go svg { width: 16px; height: 16px; }
+.sso { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); font-weight: 600; transition: border-color .15s, background .15s; }
+.sso:hover { text-decoration: none; border-color: var(--accent); background: var(--accent-soft); } .sso svg { width: 18px; height: 18px; color: var(--accent); }
+.or { display: flex; align-items: center; gap: 10px; margin: 20px 0; color: var(--muted); font-size: 13px; }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.signin-box .note { border-radius: 10px; } .signin-box .note.error { background: var(--critical-soft); color: var(--critical); }
+.signin-foot { margin: 28px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
+@media (max-width: 860px) { .login-page { grid-template-columns: minmax(0, 1fr); } .brand { padding: 22px 20px; gap: 14px; } .flow { max-width: 420px; }
+  .points { display: none; } .signin { place-items: start center; padding: 28px 16px 40px; } }
+@media (prefers-reduced-motion: reduce) { .flow .pkt, .flow .gate { animation: none; } .flow .pkt.bad { transform: translateX(196px); fill: #ff6b5e; }
+  .flow .pkt:not(.bad) { transform: translateX(250px); fill: #4ec08b; } .go, .signin-box input, .sso { transition: none; } }
 @media (max-width: 880px) { .with-guide { grid-template-columns: minmax(0, 1fr); } .guide { position: static; max-height: none; }
   .geo-grid { grid-template-columns: minmax(0, 1fr); }
   .panel.half, .panel.third, .panel.rest { grid-column: span 12; } .status .state { margin-right: 0; width: 100%; }
@@ -515,7 +557,7 @@ def layout(active, title, body, host, notice="", error=""):
     events = events_base(host)
     links = [("/", "Overview"), ("/live", "Live"), ("/blocked", "Blocked"), ("/rules", "Rules"), ("/allowlist", "Allowlist"), ("/settings", "Settings")]
     if store.tls_available and store.settings["tls_enabled"]:
-        links.insert(2, ("/connections", "Connections"))
+        links.insert(2, ("/connections", "HTTPS proxy"))
     nav = "".join(f'<a href="{p}"{" class=on" if p == active else ""}>{n}</a>' for p, n in links)
     nav += f'<a href="{esc(events, quote=True)}" target="_blank" rel="noopener">Events ↗</a>'
     leave = f'<form method="post" action="/logout">{hidden()}<button class="quiet">Sign out</button></form>'
@@ -557,11 +599,11 @@ def tile(value, label):
 
 
 def overview_tile():
-    """The tile that opens the Connections page, only while HTTPS inspection is on."""
+    """The tile that opens the HTTPS proxy page, only while HTTPS inspection is on."""
     if not (store.tls_available and store.settings["tls_enabled"]):
         return ""
     count = store.conn_totals(1)["inspected"]
-    return (f'<a class="tile" href="/connections" title="Connections inspected in the last 24 hours. Open the Connections page.">'
+    return (f'<a class="tile" href="/connections" title="Connections inspected in the last 24 hours. Open the HTTPS proxy page.">'
             f'<b>{esc(number(count))}</b><span>Decrypted, 24h</span></a>')
 
 
@@ -654,7 +696,7 @@ def connections_page(host, notice="", error="", query=None):
         how = ('<p>HTTPS inspection is a beta feature and is not part of this install.</p>'
                '<p class="muted">To enable it, set <code>COMPOSE_PROFILES=https</code> in the <code>.env</code> file of this install, then run '
                '<code>docker compose up -d</code>. This page and a Settings tab for it then appear.</p>')
-        return layout("/connections", "Connections", panel("HTTPS inspection is not enabled", how), host, notice, error)
+        return layout("/connections", "HTTPS proxy", panel("HTTPS inspection is not enabled", how), host, notice, error)
     query = query or {}
     device = query.get("device", [""])[0][:64]
     site = query.get("site", [""])[0][:100]
@@ -667,7 +709,7 @@ def connections_page(host, notice="", error="", query=None):
                '<p class="muted">To see connections here, turn on HTTPS inspection and Keep a log of connections under '
                '<a href="/settings?tab=https">Settings, HTTPS inspection</a>, list a device, and set the proxy in that device\'s browser. '
                'Only traffic that goes through the proxy is shown, not the whole network.</p>')
-        return layout("/connections", "Connections", panel("No connections yet", how), host, notice, error)
+        return layout("/connections", "HTTPS proxy", panel("No connections yet", how), host, notice, error)
     series = store.conn_hourly()
     share = lambda part: f"{round(part * 100 / through)}%" if through else "0%"
     tiles = "".join([
@@ -709,7 +751,7 @@ def connections_page(host, notice="", error="", query=None):
             + panel("Skipped automatically", table(["Device", "Name", "Until"], auto, "Nothing was skipped automatically."), "From the proxy, for 24 hours after a device refuses the certificate.", size="half")
             + panel("Recent connections", latest, "The latest 200 from the log, newest first.")
             + "</div>" + foot)
-    return layout("/connections", "Connections", body, host, notice, error)
+    return layout("/connections", "HTTPS proxy", body, host, notice, error)
 
 
 def host_page(host, ip):
@@ -935,8 +977,8 @@ GUIDE = {
 <p>Or upload a certificate chain and its key together. Then the key does cross the network, so use a CA made only for this.</p>
 <h2>Consent</h2>
 <p>Inspect only your own devices, or with the consent of the person using them. Block never acts on an alert from decrypted traffic. It is recorded as Would block, because a web page can send a crafted URL to a shared CDN, and a block would then cut that CDN off for the whole network.</p>
-<h2>The Connections page</h2>
-<p>The Connections page shows what the proxy did with each connection: which site, from which device, whether it was inspected or passed untouched and why, and how many bytes. It shows never URLs or content, and only traffic that went through the proxy, not the whole network.</p>
+<h2>The HTTPS proxy page</h2>
+<p>The HTTPS proxy page shows what the proxy did with each connection: which site, from which device, whether it was inspected or passed untouched and why, and how many bytes. It shows never URLs or content, and only traffic that went through the proxy, not the whole network.</p>
 <p>The proxy keeps the log in two files of 5 MiB, so at most 10 MiB, and the page keeps its statistics for 7 days. Keep a log of connections turns it off, and Delete the log removes it.</p>""",
     "account": """<h2>Password</h2>
 <p>Set a new password of at least 12 characters, and repeat it. It signs in to these pages and to Events, and it keeps working when single sign-on is on. Leave the fields empty to keep the current one.</p>
@@ -1155,8 +1197,8 @@ def https_card(host, switch, field):
                   f'{auto}</section>')
     log = ('<section class="card when-on"><h2>Connection log</h2><div class="logrow">'
            + switch("tls_log", "Keep a log of connections", s["tls_log"])
-           + '<button class="ghost" formaction="/tls/log/delete" onclick="return confirm(\'Delete the connection log? Both log files are removed and the Connections page starts empty. This cannot be undone.\')">Delete the log</button>'
-           '<a href="/connections">Open the Connections page</a></div>'
+           + '<button class="ghost" formaction="/tls/log/delete" onclick="return confirm(\'Delete the connection log? Both log files are removed and the HTTPS proxy page starts empty. This cannot be undone.\')">Delete the log</button>'
+           '<a href="/connections">Open the HTTPS proxy page</a></div>'
            '<p class="hint">This log shows which sites each listed device visited, so the consent note above applies. It holds no URLs or content. '
            'Turning it off stops new lines and keeps what is there.</p></section>')
     advanced = ('<details class="card advanced when-on"><summary>Advanced</summary><div class="inner">'
@@ -1392,17 +1434,55 @@ def callback_url(host):
     return f"{PUBLIC_URL or 'http://' + host}/auth/callback"
 
 
+LOGO = ('<svg viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5aa2f0"/>'
+        '<stop offset="1" stop-color="#2a78d6"/></linearGradient></defs><path d="M10 6l7 6h14l7-6v20c0 9-6.5 15-14 18-7.5-3-14-9-14-18z" fill="url(#lg)"/>'
+        '<path d="M17 24l4.5 4.5L31 19" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+FLOW = ('<svg class="flow" viewBox="0 0 400 230" aria-hidden="true"><defs><linearGradient id="gate" gradientUnits="userSpaceOnUse" x1="0" y1="34" x2="0" y2="200"><stop offset="0" stop-color="#3987e5" stop-opacity="0"/>'
+        '<stop offset=".5" stop-color="#5aa2f0"/><stop offset="1" stop-color="#3987e5" stop-opacity="0"/></linearGradient></defs>'
+        '<text class="label" x="28" y="20">INTERNET</text><text class="label" x="246" y="20">MIKROKAT</text><text class="label" x="354" y="20">LAN</text>'
+        + "".join(f'<line class="lane" x1="40" y1="{y}" x2="364" y2="{y}"/><circle class="node" cx="40" cy="{y}" r="7"/><circle class="lan" cx="368" cy="{y}" r="6"/>'
+                  for y in (55, 95, 135, 175))
+        + '<line class="gate" x1="252" y1="34" x2="252" y2="200"/><path d="M243 104l9-6 9 6v12c0 6-4 10-9 12-5-2-9-6-9-12z" fill="#13233b" stroke="#5aa2f0" stroke-width="1.5"/>'
+        '<rect class="pkt" x="44" y="52" width="14" height="6" rx="3"/><rect class="pkt bad p2" x="44" y="92" width="14" height="6" rx="3"/>'
+        '<rect class="pkt p3" x="44" y="132" width="14" height="6" rx="3"/><rect class="pkt p4" x="44" y="172" width="14" height="6" rx="3"/>'
+        '<rect class="pkt p5" x="44" y="92" width="14" height="6" rx="3"/><rect class="pkt bad p6" x="44" y="172" width="14" height="6" rx="3"/></svg>')
+
+KEY = ('<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+       '<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3m-4 4l3 3m-5-1l2 2"/></svg>')
+EYE = ('<svg class="open" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+       '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>'
+       '<svg class="shut" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+       '<path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>')
+ARROW = ('<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+         '<path d="M5 12h14m-6-6l6 6-6 6"/></svg>')
+REVEAL_SCRIPT = """
+document.querySelector('.reveal').addEventListener('click', (e) => {
+  const button = e.currentTarget, input = document.getElementById('password'), show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  button.setAttribute('aria-pressed', String(show));
+  button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  input.focus();
+});
+"""
+
+
 def login_page(error=""):
-    message = f'<p class="note error">{esc(error)}</p>' if error else ""
-    single = (f'<a class="sso" href="/auth/login">Sign in with {esc(store.settings["oidc_label"])}</a><div class="or"><span>or use your password</span></div>'
+    message = f'<p class="note error" role="alert">{esc(error)}</p>' if error else ""
+    single = (f'<a class="sso" href="/auth/login">{KEY}Sign in with {esc(store.settings["oidc_label"])}</a><div class="or"><span>or use your password</span></div>'
               if store.settings["oidc_enabled"] else "")
+    brand = (f'<section class="brand"><div class="logo">{LOGO}<div><h1>Mikrokat</h1><p>Intrusion detection for MikroTik</p></div></div>{FLOW}'
+             '<ul class="points"><li>Suricata watches the traffic your router mirrors</li><li>Threats are blocked on the router itself</li>'
+             '<li>Runs on your own network</li></ul></section>')
+    form = (f'<section class="signin"><div class="signin-box"><h2>Sign in</h2><p class="sub">Welcome back. Sign in to see what is happening on your network.</p>'
+            f'{message}{single}<form method="post" action="/login">'
+            '<label class="field"><span>User</span><input name="username" autocomplete="username" autofocus required></label>'
+            '<label class="field"><span>Password</span><span class="secret"><input type="password" id="password" name="password" autocomplete="current-password" required>'
+            f'<button type="button" class="reveal" aria-label="Show password" aria-pressed="false">{EYE}</button></span></label>'
+            f'<button class="go">Sign in{ARROW}</button></form><p class="signin-foot">Mikrokat · open source IDS for MikroTik</p></div></section>')
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<title>Sign in to Mikrokat</title><style>{STYLE}</style></head><body class="login-page"><main><section class="card login">'
-            f'<h1>Mikrokat</h1><p class="tagline">Intrusion detection for MikroTik</p>{message}{single}'
-            f'<form method="post" action="/login">'
-            f'<label class="field"><span>User</span><input name="username" autocomplete="username" autofocus required></label>'
-            f'<label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>'
-            f'<button>Sign in</button></form></section></main></body></html>')
+            f'<title>Sign in to Mikrokat</title><style>{STYLE}</style></head><body class="login-page">{brand}<main class="signin-main">{form}</main>'
+            f'<script>{REVEAL_SCRIPT}</script></body></html>')
 
 
 PAGES = {"/": overview_page, "/live": live_page, "/blocked": blocked_page, "/rules": rules_page, "/allowlist": allowlist_page, "/settings": settings_page,

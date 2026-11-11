@@ -58,7 +58,7 @@ settings = {
     "tls_ca_request_cancel": 0,
     "tls_auto_remove": [],
     "tls_bank_list": True,  # skip the names of the bank list the proxy downloads
-    "tls_log": True,  # keep the proxy's log of connections, and read it for the Connections page
+    "tls_log": True,  # keep the proxy's log of connections, and read it for the HTTPS proxy page
     "router_host": os.environ.get("ROUTER_HOST", ""),
     "router_user": os.environ.get("ROUTER_USER", "mikrokat"),
     "router_password": os.environ.get("ROUTER_PASSWORD", ""),

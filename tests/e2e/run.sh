@@ -498,7 +498,7 @@ log_has() {
   grep -qE "$1" data/tls/state/connections.jsonl 2>/dev/null
 }
 
-# The traffic of the checks above is in the log and on the Connections page, and the log holds no URL.
+# The traffic of the checks above is in the log and on the HTTPS proxy page, and the log holds no URL.
 bank_list_loaded() {
   [ "$(json_get bank_list_names <data/tls/state/stats.json)" = 1101 ]
 }
@@ -562,7 +562,7 @@ connections_checks() {
   fi
   [ "$(json_get log_dropped <data/tls/state/stats.json)" = 0 ] || fail "log_dropped is not 0"
 
-  check "Connections page"
+  check "HTTPS proxy page"
   # The app reads the log every 30 seconds.
   wait_for 90 connections_page_has '<b>[1-9][0-9 ]*</b><span>Connections, 24h' || fail "the page shows no connections after 90 seconds"
   local page
@@ -572,7 +572,7 @@ connections_checks() {
     grep -qF "$text" <<<"$page" || fail "the page does not show: $text"
   done
   grep -q 'mikrokat-e2e' <<<"$page" && fail "the page shows a path"
-  grep -qE '<a href="/connections"( class=on)?>Connections</a>' <<<"$page" || fail "no Connections item in the menu"
+  grep -qE '<a href="/connections"( class=on)?>HTTPS proxy</a>' <<<"$page" || fail "no HTTPS proxy item in the menu"
   curl -s -o /dev/null -w '%{redirect_url}' "$APP/connections" | grep -q /login || fail "the page needs no login"
   connections_browser
 }
@@ -834,7 +834,7 @@ profile_off_check() {
   curl -s -b "$E2E_WORK/cookies" "$APP/connections" | grep -q "COMPOSE_PROFILES=https" || fail "/connections does not say how to enable it"
   [ "$(curl -s -o /dev/null -w '%{http_code}' -b "$E2E_WORK/cookies" "$APP/tls/ca.pem")" = 404 ] || fail "/tls/ca.pem is not a 404"
   curl -s "$APP/tls.pac" | grep -q 'return "DIRECT"' || fail "/tls.pac does not answer direct"
-  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q 'href="/connections"' && fail "the Overview links to Connections"
+  curl -s -b "$E2E_WORK/cookies" "$APP/" | grep -q 'href="/connections"' && fail "the Overview links to the HTTPS proxy page"
   echo "five containers, no proxy, no tab"
   if have_browser; then
     mkdir -p "$E2E_WORK/pw"

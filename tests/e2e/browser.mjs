@@ -5,9 +5,9 @@
 //
 //   node browser.mjs request   tabs, then switch on, create a request, sign it, upload the certificate alone
 //   node browser.mjs pair      the older upload of certificate and key together, then Stop using my CA
-//   node browser.mjs connections   the Connections page after real traffic: bars, tiles, tables, filters, dark and light
+//   node browser.mjs connections   the HTTPS proxy page after real traffic: bars, tiles, tables, filters, dark and light
 //   node browser.mjs guide     click every Settings tab: its pane and only its guide block show, with no reload; the AI presets
-//   node browser.mjs off      the stack without the https profile: no HTTPS inspection tab or guide block, no Connections item, a note on /connections
+//   node browser.mjs off      the stack without the https profile: no HTTPS inspection tab or guide block, no HTTPS proxy item, a note on /connections
 //   node browser.mjs names     the Known devices list of a rendered page with 38 names (NAMES_HTML)
 //
 // APP, MK_PASSWORD and OUT (where the downloads and the screenshots go) come from the environment.
@@ -133,7 +133,7 @@ async function layout(page) {
   const ys = [tops.beta, tops.status, ...tops.cards.map((c) => c[1])];
   if (ys.some((y, i) => i && y <= ys[i - 1])) fail(`the cards are out of order: ${JSON.stringify(ys)}`);
   await shown(pane.locator('.status:has-text("On")'), 'the status row');
-  await shown(pane.locator('.logrow a[href="/connections"]'), 'the Connections link on the log card');
+  await shown(pane.locator('.logrow a[href="/connections"]'), 'the HTTPS proxy link on the log card');
   await shown(pane.locator('.status .fact:has-text("CA")'), 'the CA in the status row');
   await shown(pane.locator('.status .fact:has-text("inspected")'), 'Inspected in the status row');
   await shown(pane.locator('.status .fact:has-text("Refused")'), 'Refused in the status row');
@@ -356,14 +356,14 @@ async function names(page) {
 
 async function connections(page) {
   await signIn(page);
-  step('the Connections item is in the menu, and the Overview tile opens the page');
+  step('the HTTPS proxy item is in the menu, and the Overview tile opens the page');
   await page.goto(`${APP}/`);
-  await shown(page.locator('nav a:has-text("Connections")'), 'the Connections menu item');
+  await shown(page.locator('nav a:has-text("HTTPS proxy")'), 'the HTTPS proxy menu item');
   const tile = page.locator('a.tile:has-text("Decrypted, 24h")');
   await shown(tile, 'the Decrypted, 24h tile on Overview');
   await shot(page, 'overview-tile');
   await Promise.all([page.waitForURL(`${APP}/connections`), tile.click()]);
-  await shown(page.locator('h1:has-text("Connections")'), 'the Connections heading');
+  await shown(page.locator('h1:has-text("HTTPS proxy")'), 'the HTTPS proxy heading');
 
   step('the tiles show data');
   for (const label of ['Connections, 24h', 'Inspected share', 'Passed share', 'Data through the proxy']) {
@@ -521,9 +521,9 @@ async function guide(page) {
 
 async function off(page) {
   await signIn(page);
-  step('no Connections item and no tile on Overview');
+  step('no HTTPS proxy item and no tile on Overview');
   await page.goto(`${APP}/`);
-  if ((await page.locator('nav a:has-text("Connections")').count()) !== 0) fail('the menu has a Connections item');
+  if ((await page.locator('nav a:has-text("HTTPS proxy")').count()) !== 0) fail('the menu has an HTTPS proxy item');
   if ((await page.locator('a.tile:has-text("Decrypted")').count()) !== 0) fail('Overview has the Decrypted tile');
   step('no HTTPS inspection tab, pane or guide block');
   await page.goto(`${APP}/settings`);

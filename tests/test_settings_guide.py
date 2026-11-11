@@ -258,7 +258,7 @@ class Guide(Base):
     def test_the_blocks_hold_what_the_brief_asks_for(self):
         wanted = {"protection": ("Monitor", "Block", "allowlist", "repeat"), "notifications": ("Telegram", "chat ID", "webhook"),
                   "router": ("/ip firewall mangle", "/user group add", "/ip firewall raw"), "data": ("EveBox", "EVE", "SIEM"),
-                  "ai": ("never", "local", "cost", "Test"), "https": ("Firefox", "own CA", "consent", "Connections"),
+                  "ai": ("never", "local", "cost", "Test"), "https": ("Firefox", "own CA", "consent", "HTTPS proxy page"),
                   "account": ("password", "single sign-on", "session")}
         for key, words in wanted.items():
             for word in words:
